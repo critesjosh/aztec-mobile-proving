@@ -40,5 +40,21 @@ rn-spike/AztecPxeSpike/android/app/src/main/assets/flows/
 rn-spike/AztecPxeSpike/ios/Pods/
 rn-spike/AztecPxeSpike/vendor/
 
+# Wallet: deps, build outputs, regenerable bundled assets. Key material is
+# NEVER on disk unsealed and never under the repo; sealed blobs live in app
+# storage on-device only.
+wallet/**/node_modules/
+wallet/pxe-web/dist/
+wallet/app/android/.gradle/
+wallet/app/android/app/build/
+wallet/app/android/app/.cxx/
+wallet/app/android/build/
+wallet/app/android/local.properties
+wallet/app/android/app/src/main/jniLibs/
+# WebView PXE bundle (vite dist) + SRS slices are build outputs:
+# regenerate via wallet/pxe-web `npm run build` + scripts/prepare-srs.sh.
+wallet/app/android/app/src/main/assets/pxe/
+wallet/app/android/app/src/main/assets/srs/
+
 # OS
 .DS_Store

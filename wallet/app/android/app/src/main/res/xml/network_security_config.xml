@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Allow cleartext ONLY to the in-app loopback asset server (the WebView PXE
+     origin). Everything else (the Aztec node RPC, explorer) stays HTTPS-only,
+     including in release builds where RN sets usesCleartextTraffic=false. -->
+<network-security-config>
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">127.0.0.1</domain>
+    </domain-config>
+</network-security-config>

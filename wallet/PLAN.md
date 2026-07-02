@@ -387,6 +387,31 @@ and accepted/rejected with reasons, then a local commit.
    DROPPED with grace window; network errors handled separately.
 9. **Accepted.** M1/M2 numbering inconsistency fixed (persistence fail-fast
    is M1).
-10. **Accepted.** Exact walletDb override spelled out
-    (`walletDb: { store: await openTmpStore(true) }` from
-    `@aztec/kv-store/indexeddb`), with the two failure directions named.
+10. **Accepted, then superseded in round 2.** Round 1 spelled out
+    `walletDb: { store: await openTmpStore(true) }`; round 2 found that this
+    is NOT in-memory (see below), so the design is now a custom memory store.
+
+### Round 2 (on the M1 implementation, 2026-07-02)
+
+4 findings; verified against source before acting.
+
+1. **Accepted (verified, critical).** `openTmpStore(true)` from
+   `@aztec/kv-store/indexeddb` opens a REAL IndexedDB database (random name,
+   never deleted — verified in `kv-store/dest/indexeddb/{index,store}.js`:
+   `ephemeral` only affects naming), so WalletDB would have written account
+   secret keys to WebView disk. Fixed with a genuinely in-memory
+   `AztecAsyncKVStore` (`pxe-web/src/mem-store.ts`) covering the full map
+   surface WalletDB uses; wallet secrets now exist only in page memory,
+   re-supplied per session from the Keystore-sealed vault.
+2. **Accepted (verified).** `getTxReceipt` now returns `executionResult`
+   (v5 `success|reverted`, mined-only) + drop `error`; the poller and vault
+   only mark the account deployed on mined AND success; reverted txs surface
+   in Activity as reverted.
+3. **Accepted.** AMM setup is now a strict step machine: each step advances
+   only after the previous step's tx confirmed with success; pending asks to
+   retry later, dropped/reverted rewinds the step (deploys) or resubmits
+   (set_minter).
+4. **Accepted in part (labeled speculative by Codex).** Added bounded request
+   parsing to AssetHttpServer (max 64 headers, 8 KB lines, existing 10 s
+   soTimeout). Residual local slowloris within those caps is documented in
+   code: loopback-only, only delays static asset loads, self-healing.
