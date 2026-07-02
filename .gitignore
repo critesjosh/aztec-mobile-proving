@@ -23,5 +23,20 @@ circuits/*/target/
 testnet/node_modules/
 node_modules/
 
+# RN spike: deps, build outputs, and regenerable bundled assets
+rn-spike/**/node_modules/
+rn-spike/webview-pxe/dist/
+rn-spike/AztecPxeSpike/android/.gradle/
+rn-spike/AztecPxeSpike/android/app/build/
+rn-spike/AztecPxeSpike/android/app/.cxx/
+rn-spike/AztecPxeSpike/android/build/
+rn-spike/AztecPxeSpike/android/app/src/main/jniLibs/
+# Bundled WebView PXE + SRS assets are build outputs (vite dist + SRS slices);
+# regenerate via webview-pxe `vite build` + scripts/prepare-srs.sh.
+rn-spike/AztecPxeSpike/android/app/src/main/assets/pxe/
+rn-spike/AztecPxeSpike/android/app/src/main/assets/srs/
+rn-spike/AztecPxeSpike/ios/Pods/
+rn-spike/AztecPxeSpike/vendor/
+
 # OS
 .DS_Store

@@ -141,6 +141,10 @@ pub extern "system" fn Java_foundation_aztec_noirprover_NativeProver_chonkProve(
             "proof_size_bytes": out.proof_size_bytes,
             "vk_bytes": out.vk.len(),
             "peak_rss_mb": peak_rss_mb(),
+            // Flat proof fields + vk (hex) so a WebView-hosted PXE can rebuild
+            // ChonkProofWithPublicInputs and submit the tx (RN spike path).
+            "proof_fields": out.proof_fields.iter().map(|f| hex(f)).collect::<Vec<_>>(),
+            "vk": hex(&out.vk),
         }))
     })
 }

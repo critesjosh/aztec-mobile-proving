@@ -1,0 +1,28 @@
+{
+  "name": "aztec-webview-pxe",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "vite build",
+    "dev": "vite"
+  },
+  "dependencies": {
+    "@aztec/accounts": "5.0.0-rc.2",
+    "@aztec/aztec.js": "5.0.0-rc.2",
+    "@aztec/bb-prover": "^5.0.0-rc.2",
+    "@aztec/bb.js": "5.0.0-rc.2",
+    "@aztec/constants": "5.0.0-rc.2",
+    "@aztec/foundation": "5.0.0-rc.2",
+    "@aztec/noir-contracts.js": "5.0.0-rc.2",
+    "@aztec/pxe": "5.0.0-rc.2",
+    "@aztec/simulator": "^5.0.0-rc.2",
+    "@aztec/stdlib": "5.0.0-rc.2",
+    "@aztec/wallets": "^5.0.0-rc.2"
+  },
+  "devDependencies": {
+    "playwright-core": "1.58",
+    "vite": "^5.4.0",
+    "vite-plugin-node-polyfills": "^0.22.0"
+  }
+}

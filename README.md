@@ -241,15 +241,15 @@ publication enabled and `from: NO_FROM` (self-deploy), it lands.
 | Flow | connect+PXE | witgen+prove+submit+mined | native ClientIVC prove | native peak RSS | total |
 |---|---|---|---|---|---|
 | Account deploy | 1,451 ms | 18,144 ms | 1,278 ms | 372 MB | 19,732 ms |
-| Private transfer (deploy+mint+transfer) | 1,516 ms | — | 1,203 ms (transfer) | 320–353 MB | 48,738 ms |
+| Private transfer | 1,516 ms | 11,369 ms | 1,203 ms | ~353 MB | 11,369 ms |
 
-The transfer total covers three sequential mined txs (token deploy 18,753 ms,
-mint 16,973 ms, transfer 11,369 ms). "witgen+prove+submit+mined" is one phase
-here because `send()` waits for mining; the native prove is the sub-second-ish
-ClientIVC portion, the rest is PXE witgen + network inclusion. First tx is
-slower (proving-key download); testnet inclusion time varies. Proving here ran
-on the host native lib; `BRIDGE=adb` produces the identical proof on-device
-(~1.4–2.2 s ClientIVC on the emulator, per the app benchmarks above).
+A prior token deploy + private mint were needed to fund the transfer but aren't
+counted here. "witgen+prove+submit+mined" is one phase because `send()` waits
+for mining; the native prove is the sub-second-ish ClientIVC portion, the rest
+is PXE witgen + network inclusion. First tx is slower (proving-key download);
+testnet inclusion time varies. Proving here ran on the host native lib;
+`BRIDGE=adb` produces the identical proof on-device (~1.4–2.2 s ClientIVC on the
+emulator, per the app benchmarks above).
 
 ## Provenance / attribution
 
