@@ -35,8 +35,11 @@ const SPONSORED_FPC =
 const PXE_URI = 'file:///android_asset/pxe/index.html';
 
 function randHex(n: number): string {
+  // SPIKE ONLY: Math.random() is NOT cryptographically secure. Fine here — the
+  // account is a fresh throwaway generated per run and never reused or funded.
+  // A real wallet MUST use secure randomness (react-native-get-random-values /
+  // Keystore) and store the key in the Android Keystore / iOS Keychain.
   const b = new Uint8Array(n);
-  // Throwaway key for the spike only.
   for (let i = 0; i < n; i++) {
     b[i] = Math.floor(Math.random() * 256);
   }
@@ -76,6 +79,17 @@ export default function App() {
       } else if (msg.type === 'log') {
         log(msg.msg);
       } else if (msg.type === 'proveRequest') {
+        // The WebView content is trusted (bundled), but guard the bridge
+        // against malformed/oversized payloads before handing bytes to native.
+        if (typeof msg.id !== 'number' || typeof msg.ivcInputsB64 !== 'string') {
+          log('proveRequest: bad payload, ignored');
+          return;
+        }
+        if (msg.ivcInputsB64.length > 64 * 1024 * 1024) {
+          post({type: 'proveResult', id: msg.id, verified: false, proofFields: [], vkHex: ''});
+          log('proveRequest: payload too large, rejected');
+          return;
+        }
         log(`proveRequest #${msg.id} -> native prover (on-device)`);
         try {
           const t = Date.now();

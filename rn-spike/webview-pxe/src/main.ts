@@ -46,10 +46,22 @@ const log = (msg: string) => toHost({ type: 'log', msg });
 
 const pending = new Map<number, (r: any) => void>();
 let proveSeq = 0;
+const PROVE_TIMEOUT_MS = 15 * 60 * 1000;
 const proveOverBridge: ProveOverBridge = (ivc: Uint8Array) =>
-  new Promise((resolve) => {
+  new Promise((resolve, reject) => {
     const id = ++proveSeq;
-    pending.set(id, resolve);
+    // Reject (and free the map entry) if the host never posts a proveResult
+    // — e.g. a native hang, a lost injected message, or a WebView reload —
+    // so the deploy promise fails loudly instead of hanging forever.
+    const timer = setTimeout(() => {
+      if (pending.delete(id)) {
+        reject(new Error(`native prove #${id} timed out after ${PROVE_TIMEOUT_MS} ms`));
+      }
+    }, PROVE_TIMEOUT_MS);
+    pending.set(id, (r) => {
+      clearTimeout(timer);
+      resolve(r);
+    });
     toHost({ type: 'proveRequest', id, ivcInputsB64: bytesToB64(ivc) });
   });
 

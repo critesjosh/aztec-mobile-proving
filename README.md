@@ -251,6 +251,24 @@ testnet inclusion time varies. Proving here ran on the host native lib;
 `BRIDGE=adb` produces the identical proof on-device (~1.4–2.2 s ClientIVC on the
 emulator, per the app benchmarks above).
 
+## React Native on-device PXE (spike)
+
+`rn-spike/` runs the full flow on an actual device: a RN 0.84 app hosts the
+Aztec PXE in an Android WebView (acvm_js WASM witgen + IndexedDB) and produces
+the ClientIVC proof ON THE DEVICE with this repo's native Rust prover
+(`libnoir_prover_jni.so`, bridged from the WebView through a Kotlin native
+module). A real testnet account-deploy tx was sent end-to-end from the Android
+emulator:
+
+- tx `0x077de30beecf337ac9ecbf4da41990897ebb58484cbd99d3a912019616d8c110`
+  (checkpointed, block 2689), native prove 2.0 s on-device.
+
+Key finding: the PXE cannot run in Hermes (no `WebAssembly`/`IndexedDB`), so it
+runs in a WebView; the native prover is injected as the PXE's ClientIVC prover.
+No public precedent for a native-prover-backed on-device PXE landing a tx. Full
+feasibility analysis, the honest build log ("what fought back"), and next steps
+are in `rn-spike/README.md`.
+
 ## Provenance / attribution
 
 All ZK machinery is Aztec's. Vendored/derived from

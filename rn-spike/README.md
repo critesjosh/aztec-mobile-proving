@@ -150,9 +150,71 @@ Node-bridge→JSI-native-module is the remaining engineering (both are
 well-trodden RN mechanisms; the risky/unknown parts — WASM PXE boot, native
 prover injection, proof reconstruction, on-chain acceptance — are all proven).
 
-### 4. Device-originated tx (Android emulator)
+### 4. Device-originated tx (Android emulator): LANDED
 
-See `AztecPxeSpike/` (RN 0.84 app: Android WebView loading the `webview-pxe`
-bundle + a native module bridging `proveRequest` to the on-device Rust prover)
-and the parent README RN section for the current state and whether a
-device-originated tx landed.
+The full RN app (`AztecPxeSpike/`, RN 0.84, New Arch/Hermes) ran on the Android
+emulator (x86_64, API 36) and sent a real testnet tx end-to-end from the device:
+
+- tx `0x077de30beecf337ac9ecbf4da41990897ebb58484cbd99d3a912019616d8c110`
+- on-chain: **status checkpointed, block 2689**
+
+On-device flow (from the app's own log view + logcat):
+```
+WebView ready
+SRS init: {"grumpkin_points":65536,"num_points":524288,"ok":true}   ← native libnoir_prover_jni.so
+status: wasm:acvm-init                                              ← WebView acvm_js WASM
+Started PXE connected to chain 11155111 version 2787991301          ← Android System WebView
+status: account 0x1eb4c9…
+Private kernel witness generation took 1219 ms                      ← witgen in WebView WASM
+proveRequest #1 -> native prover (on-device)
+native prove: verified=true prove=2032ms fields=2630 wall=4759ms    ← native Rust prover, on device
+Sent transaction 0x077de30b…
+TX proposed
+```
+
+So: the PXE runs in the Android System WebView (Chromium 134) doing acvm_js WASM
+kernel witgen + IndexedDB; the ClientIVC proof is produced ON THE DEVICE by the
+native Rust `libnoir_prover_jni.so` (Kotlin `ProverModule` bridging the WebView
+`proveRequest` → JNI `chonkProve`); the proof is reconstructed as
+`ChonkProofWithPublicInputs` in the WebView and submitted to testnet.
+
+Native prove on the emulator was ~2.0 s (vs ~1.1–1.3 s on host — emulator is
+slower; a real arm64 device would differ again). App proving-relevant peak was
+comparable to the standalone app benchmarks.
+
+### What fought back (honest build log)
+
+1. **Hermes cannot boot the PXE** — no `WebAssembly`/`IndexedDB`. Resolved by
+   the WebView (has both). This is fundamental, not a workaround gap.
+2. **`file://` + ES-module + absolute asset paths** — vite's default bundle
+   used `src="/assets/…"` and `type="module" crossorigin`, which the Android
+   WebView resolved to the device root and refused to run
+   (`window.__aztecOnHostMessage is not a function`). Fixed with
+   `base: './'` + `vite-plugin-singlefile` (inline the JS into index.html, WASM
+   as data URIs) + `allowFileAccessFromFileURLs`/`allowUniversalAccessFromFileURLs`
+   on the WebView. This is the classic RN-WebView-over-file:// trap.
+3. **playwright/chromium version skew** on the host de-risk harness (cosmetic;
+   fixed by pinning playwright-core to the cached chromium build).
+4. **sync-vs-async bb.js crux (the thing that stalls Hermes ports) is avoided
+   entirely** by the WebView: bb.js runs unmodified in the WebView as in a
+   browser; only the async `createChonkProof` is redirected, and that method is
+   already async in the interface. No fork of the Aztec JS graph.
+
+### Known limitations / next steps
+
+- **WebView proving offload uses SharedArrayBuffer avoidance**: bb.js WASM
+  proving (which needs COOP/COEP-isolated SharedArrayBuffer, unavailable over
+  file://) is offloaded to native, so only single-threaded acvm_js witgen runs
+  in the WebView. That's the design, but it means kernel witgen is
+  single-threaded in the WebView.
+- **JSI/TurboModule vs old-arch module**: the native bridge here is a classic
+  `ReactContextBaseJavaModule` (works under RN 0.84 New Arch interop). A true
+  JSI/TurboModule would avoid the JSON/base64 marshalling of the ~2630-field
+  proof across the bridge (a perf/latency refinement, not a blocker).
+- **iOS not built** (would need a Swift `ProverModule` + the `arm64-ios`
+  static lib; Apple libc++ is `std::__1` so no libc++ workaround needed).
+- **Physical arm64 device** not benchmarked.
+- **Key storage**: the spike generates a throwaway key on-device per run; a real
+  wallet needs Keychain/Keystore-backed secure storage.
+- **bundle size**: the inlined WebView bundle is ~67 MB (WASM as data URIs);
+  a local http-server-in-app or asset streaming would shrink the APK.

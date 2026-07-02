@@ -1,5 +1,6 @@
 import { defineConfig, type Plugin } from 'vite';
 import { type PolyfillOptions, nodePolyfills } from 'vite-plugin-node-polyfills';
+import { viteSingleFile } from 'vite-plugin-singlefile';
 
 // Workaround for vite-plugin-node-polyfills shim resolution (per Aztec webapp tutorial).
 const nodePolyfillsFix = (options?: PolyfillOptions): Plugin => ({
@@ -13,7 +14,15 @@ const nodePolyfillsFix = (options?: PolyfillOptions): Plugin => ({
 });
 
 export default defineConfig({
-  plugins: [nodePolyfillsFix({ globals: { process: true, Buffer: true } })],
+  // Relative asset paths so the bundle loads from file:///android_asset/pxe/.
+  base: './',
+  plugins: [
+    nodePolyfillsFix({ globals: { process: true, Buffer: true } }),
+    // Inline JS/CSS into index.html as a classic (non-module) script so the
+    // Android WebView doesn't have to fetch a cross-origin ES module over
+    // file://. WASM assets stay external and load via relative ./ URLs.
+    viteSingleFile({ useRecommendedBuildConfig: true, removeViteModuleLoader: true }),
+  ],
   server: {
     // COOP/COEP so SharedArrayBuffer is available (bb WASM would need it; we
     // offload proving to native, but acvm_js is happier isolated too).
