@@ -125,7 +125,11 @@ export class WalletController {
   /** Phase 2: driven by the WebView 'ready' event. */
   private async onWebViewReady(): Promise<void> {
     if (this.booted) {
-      return; // reload after crash: re-run boot explicitly via restartSession
+      // The page reloaded outside the crash/restart path (e.g. the renderer
+      // was silently replaced). The fresh document is unbooted; re-running
+      // the boot sequence is the only way back to a working session.
+      this.log('WebView reloaded unexpectedly — rebooting PXE session');
+      this.update({phase: 'boot', busy: null});
     }
     this.booted = true;
     this.update({phase: 'boot'});

@@ -96,6 +96,15 @@ export class PxeSession {
     }
     switch (msg.type) {
       case 'ready':
+        // A 'ready' with calls in flight means the document reloaded under
+        // us — those calls belong to a dead page and will never resolve.
+        if (this.pending.size > 0) {
+          for (const [, call] of this.pending) {
+            clearTimeout(call.timer);
+            call.reject(new Error('WebView reloaded; PXE session reset'));
+          }
+          this.pending.clear();
+        }
         this.ready = true;
         this.emit({kind: 'ready'});
         break;

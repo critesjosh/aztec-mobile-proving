@@ -269,6 +269,18 @@ No public precedent for a native-prover-backed on-device PXE landing a tx. Full
 feasibility analysis, the honest build log ("what fought back"), and next steps
 are in `rn-spike/README.md`.
 
+## Wallet (full on-device-PXE Android wallet)
+
+`wallet/` builds the spike out into a working wallet: onboarding with
+Android-Keystore-sealed keys (secure RNG), persistent PXE state across app
+restarts, private token deploy/mint/transfer, a guided AMM add-liquidity flow
+(14 circuits), pending-tx tracking with crash recovery, and a focused
+five-screen UI — all against Aztec testnet with every ClientIVC proof
+produced on-device by this repo's native prover. Ten testnet txs landed from
+the emulator this way, including the full AMM setup + add-liquidity.
+See `wallet/README.md` (benchmarks, memory, threat model) and
+`wallet/PLAN.md` (design + Codex review log).
+
 ## Provenance / attribution
 
 All ZK machinery is Aztec's. Vendored/derived from

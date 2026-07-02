@@ -415,3 +415,27 @@ and accepted/rejected with reasons, then a local commit.
    parsing to AssetHttpServer (max 64 headers, 8 KB lines, existing 10 s
    soTimeout). Residual local slowloris within those caps is documented in
    code: loopback-only, only delays static asset loads, self-healing.
+
+### Round 3 (final pre-ship review, 2026-07-02)
+
+3 findings; all accepted and fixed.
+
+1. **Accepted (high).** Release builds were signed with the committed public
+   RN debug keystore. Now: env-provided release keystore
+   (`WALLET_RELEASE_STORE_FILE/...`, never in the repo) with an explicit,
+   loudly-warned debug-key fallback for local emulator work only; documented
+   in README limitations.
+2. **Accepted (speculative but real class).** RPC errors from key-bearing
+   methods (`createAccount`/`restoreAccounts`) previously forwarded full
+   stacks; Aztec's hex parser echoes rejected input, so a corrupted vault
+   value could have reached logs. Those methods now return redacted errors
+   (first line, >=16-hex-digit runs stripped). README claim reworded to
+   match reality.
+3. **Accepted (speculative).** An unexpected WebView reload (outside the
+   crash/restart path) left RN believing the session was booted while the
+   fresh page was not. Now: a `ready` from an already-booted controller
+   rejects in-flight RPCs (dead document) and re-runs the boot+restore
+   sequence automatically.
+
+Codex's git/worktree sweep in this round found no key material or improper
+binaries tracked; large regenerable artifacts remain gitignored.

@@ -140,15 +140,18 @@ function TokenActions({s, c}: ScreenProps) {
         }
       />
       {s.tokens.length > 0 ? (
-        <View>
-          <Label>Mint to self (first token)</Label>
+        <View style={{gap: spacing.s}}>
+          <Label>Mint to self</Label>
           <Input value={mintAmount} onChangeText={setMintAmount} keyboardType="numeric" />
-          <Button
-            title="Mint privately"
-            kind="secondary"
-            disabled={disabled}
-            onPress={() => void c.mint(s.tokens[0].address, mintAmount)}
-          />
+          {s.tokens.map(t => (
+            <Button
+              key={t.address}
+              title={`Mint ${t.symbol} privately`}
+              kind="secondary"
+              disabled={disabled}
+              onPress={() => void c.mint(t.address, mintAmount)}
+            />
+          ))}
         </View>
       ) : null}
     </View>

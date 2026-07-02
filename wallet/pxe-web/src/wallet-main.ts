@@ -469,10 +469,23 @@ window.__aztecOnHostMessage = async (raw: unknown) => {
     const result = await handler(params ?? {}, emit);
     toHost({ type: 'rpcResult', id, ok: true, result });
   } catch (e: any) {
-    // NOTE: error text only — never echo params (account methods carry keys).
-    toHost({ type: 'rpcResult', id, ok: false, error: e?.stack ?? String(e) });
+    // Errors flow into the RN log panel + logcat. Methods whose params carry
+    // key material get REDACTED errors: no stack, and any long hex payload
+    // stripped (e.g. Fr.fromString echoes its rejected input — a corrupted
+    // vault value must not end up in logs).
+    const error = KEY_BEARING_METHODS.has(method)
+      ? redactHex(String(e?.message ?? e).split('\n')[0])
+      : (e?.stack ?? String(e));
+    toHost({ type: 'rpcResult', id, ok: false, error });
   }
 };
+
+const KEY_BEARING_METHODS = new Set(['createAccount', 'restoreAccounts']);
+
+/** Replace any >=16-hex-digit run (with or without 0x) by a redaction mark. */
+function redactHex(s: string): string {
+  return s.replace(/(0x)?[0-9a-fA-F]{16,}/g, '0x…redacted…');
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
