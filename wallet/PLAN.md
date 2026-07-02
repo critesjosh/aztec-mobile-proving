@@ -121,9 +121,16 @@ RPC methods (all long ops emit `progress` events):
   exactly the client-flows/e2e_amm pattern.
 - `getTxReceipt({ txHash })`, `getBlockNumber()`, `getAccounts()`.
 
-Send-type methods return `{ txHash }` as soon as the tx is submitted (they do
-NOT wait for mining); RN tracks status by polling `getTxReceipt`. This is what
-makes pending-tx recovery possible across app restarts.
+Send-type methods use `wait: NO_WAIT` (the v5 constant from
+`@aztec/aztec.js` interaction options; `send` then returns
+`TxSendResultImmediate`) and return `{ txHash }` as soon as the tx is
+submitted; RN tracks status by polling `getTxReceipt`. This is what makes
+pending-tx recovery possible across app restarts.
+
+Account deploys keep the spike's proven options explicitly:
+`{ from: NO_FROM, skipClassPublication: false, skipInstancePublication:
+false, skipInitialization: false, fee: sponsored }` — class publication in-tx
+is what unblocked testnet acceptance for ECDSA-R accounts.
 
 ### RN side (`app`)
 
@@ -134,12 +141,18 @@ makes pending-tx recovery possible across app restarts.
   (`onRenderProcessGone`/`onContentProcessDidTerminate` -> session restart +
   surfaced error).
 - `src/keys/keyStore.ts` — account material custody (below).
-- `src/txs/pendingTxStore.ts` — persisted pending/settled tx list
-  (AsyncStorage): `{ txHash, kind, meta, createdAt, status, lastError }`;
-  poller drives pending -> proposed/checkpointed/finalized or failed/dropped
-  (`dropped` = not found after a timeout window); resumes polling on app
-  restart; UI shows retry affordances where retry is safe (idempotent
-  deploys are NOT blindly retried; a fresh tx is built instead).
+- `src/txs/pendingTxStore.ts` — persisted tx list (AsyncStorage) with
+  explicit lifecycle states: `building` (witgen/prove in session, nothing
+  durable on-chain yet), `submitting`, `submitted` (txHash persisted), then
+  receipt-derived terminal states. Receipt polling starts only once a txHash
+  is persisted; a tx that dies in `building`/`submitting` (app kill, WebView
+  crash) is shown as failed-before-submit and is rebuilt intentionally by the
+  user, never blindly retried (avoids duplicate/nullifier surprises). The
+  poller maps the v5 `TxStatus` union: `PENDING` keeps polling; mined
+  statuses (`PROPOSED`/`CHECKPOINTED`/`PROVEN`/`FINALIZED`) settle;
+  `DROPPED` settles as dropped after a grace window (a just-submitted tx can
+  transiently report dropped before the mempool sees it); network errors are
+  kept separate from tx status and retried. Polling resumes on app restart.
 - `src/tokens/tokenStore.ts` — registered token/AMM addresses + metadata
   (AsyncStorage; addresses are public data).
 - Screens (lightweight state-based navigation, no react-navigation dep):
@@ -175,11 +188,28 @@ possible for this curve usage. The standard Android pattern applies:
 - Threat model documented in README: sealed-at-rest spend keys (Keystore);
   the persistent PXE store (IndexedDB, app sandbox) holds viewing/nullifier
   key material derived from `secret` — privacy-sensitive but not
-  spend-authorizing without the ECDSA key. Stretch (feature-flagged, only if
-  the secure-origin check passes): v5 `@aztec/wallets/embedded/store-encryption`
-  + `@aztec/kv-store/sqlite-opfs` encrypted stores with the 32-byte store key
-  sealed via Keystore — requires OPFS, i.e. a secure origin.
+  spend-authorizing without the ECDSA key. Stretch (feature-flagged): v5
+  `@aztec/wallets/embedded/store-encryption` + `@aztec/kv-store/sqlite-opfs`
+  encrypted stores with the 32-byte store key sealed via Keystore. Gate on a
+  real feature probe in the WebView, not just "secure origin": dedicated
+  module `Worker` creation (the store spawns
+  `new Worker(new URL('./worker.js', import.meta.url), { type: 'module' })`,
+  so the worker chunk must be servable — loopback plan A only),
+  `navigator.storage.getDirectory` + `createSyncAccessHandle` (OPFS), and an
+  actual encrypted-store open/write/reopen round trip. Note: the store uses
+  the sqlite `opfs-sahpool` VFS, which does NOT need
+  SharedArrayBuffer/COOP/COEP (verified in `kv-store/dest/sqlite-opfs/`).
+  Adopt only if the probe passes cheaply; otherwise stays deferred.
 - Nothing key-like is ever written to logs, git, or the log panel.
+- WebView runtime hardening (M1/M2 exit criteria, since raw keys live in
+  WebView JS memory for the session): WebView content debugging disabled in
+  release builds (`webviewDebuggingEnabled` false); navigation pinned to the
+  app's own origin (`originWhitelist` + `onShouldStartLoadWithRequest`
+  rejecting everything else — the PXE talks to the node via fetch/XHR, not
+  navigation); no mixed content; `allowFileAccess`/universal-access flags
+  only in the file:// fallback, never in the loopback configuration; every
+  postMessage in BOTH directions shape-validated before use; no
+  `addJavascriptInterface` surface beyond react-native-webview's own bridge.
 
 ### Persistence
 
@@ -187,10 +217,15 @@ possible for this curve usage. The standard Android pattern applies:
   (`pxe_data_<rollupAddress>`) — notes, contracts, sync position survive app
   restarts (no re-scan, no re-registration of contract artifacts).
 - Wallet DB: `BrowserEmbeddedWallet` would persist account secret keys
-  plaintext in IndexedDB. We override `walletDb.store` with an in-memory
-  store and instead restore accounts each boot from RN sealed storage, so
-  spend keys at rest exist only Keystore-sealed.
-- FAIL-FAST check (M2): verify IndexedDB actually persists across app
+  plaintext in IndexedDB. We pass `ephemeral: false` (persistent PXE store)
+  together with `walletDb: { store: await openTmpStore(true) }` (in-memory
+  `AztecAsyncKVStore` from `@aztec/kv-store/indexeddb` — the exact override
+  seam in `BrowserEmbeddedWallet.create`) and instead restore accounts each
+  boot from RN sealed storage, so spend keys at rest exist only
+  Keystore-sealed. Getting this wrong in either direction (accidental
+  `ephemeral: true` losing PXE state, or omitting the walletDb override and
+  persisting secrets plaintext) is called out as a review point.
+- FAIL-FAST check (M1): verify IndexedDB actually persists across app
   restarts for our WebView origin. The spike ran `file://` +
   `ephemeral: true`, so persistence is unverified. Plan A is a ~100-line
   loopback HTTP asset server (Kotlin, fixed port, 127.0.0.1 only) serving the
@@ -198,10 +233,12 @@ possible for this curve usage. The standard Android pattern applies:
   reliable IndexedDB persistence, OPFS/`crypto.subtle` available, and the
   67 MB single-file inlining becomes unnecessary). Plan B (fallback) is the
   proven `file:///android_asset` single-file bundle, with persistence
-  re-verified there. Loopback server caveats documented: fixed port for
-  origin stability; serves only static public assets (no secrets, RPC stays
-  on postMessage); other apps on the device can fetch the static bundle,
-  which is public code.
+  re-verified there. Loopback server rules: FIXED port for origin stability
+  (origin = scheme+host+port; changing ports silently orphans the PXE DB) —
+  if the bind fails, fail hard with a clear error + retry/reset UX, never
+  silently fall back to another port; serves only static public assets (no
+  secrets, RPC stays on postMessage); other apps on the device can fetch the
+  static bundle, which is public code.
 
 ### Memory (first-class, fail-fast)
 
@@ -216,24 +253,33 @@ possible for this curve usage. The standard Android pattern applies:
   app+WebView total exceeds ~1.2 GB on the emulator, implement mitigation
   BEFORE M4+ features:
   - Prover process isolation: move `chonkProve` into a bound service in a
-    separate `:prover` process. Payloads cross via files in `cacheDir` (Binder
-    caps transactions ~1 MB; the ivc msgpack is multi-MB), path over AIDL/
-    Messenger. After each prove the service process can be killed, returning
+    separate `:prover` process. Payloads cross via files in the app-private
+    `cacheDir` (Binder caps transactions ~1 MB; the ivc msgpack is multi-MB),
+    path over AIDL/Messenger; payload files are deleted in a `finally` after
+    each prove. After each prove the service process can be killed, returning
     its ~0.7-0.8 GB peak to the OS; cost is SRS re-init (~0.5-1 s) per prove.
-    This also stops the prover peak from counting against the app process at
-    all — the most effective lever we have without touching barretenberg.
+    Honest framing: this removes the prover peak from the UI/WebView process
+    (so a prove can't OOM-kill the wallet UI and the OS can reclaim the
+    prover fully between proves), but total UID/device memory pressure during
+    a prove is unchanged — both per-process and total PSS are measured and
+    reported. It is still the most effective lever available without
+    touching barretenberg.
 - Report peak RSS per flow in README benchmarks either way. Emulator numbers
   are labeled emulator numbers.
 
 ### Pending tx / error / recovery
 
-- Every send returns txHash pre-mining; pendingTxStore persists immediately.
+- Every send returns txHash pre-mining (`wait: NO_WAIT`); pendingTxStore
+  persists the `submitted` state with the hash immediately.
 - Poller (foreground, 5 s interval while pending txs exist) drives status;
   app restart resumes polling from the persisted store.
 - Failure surfaces: witgen/simulation errors (shown with message, safe to
-  rebuild tx), native prove failure (logged, tx never submitted, safe retry),
-  submit/network errors (retry submit if the tx object still exists in
-  session, else rebuild), dropped-from-mempool detection via timeout.
+  rebuild tx), native prove failure (logged, tx never submitted, safe to
+  rebuild), submit/network errors before a txHash exists (state stays
+  `building`/`submitting`, surfaced as failed-before-submit, user rebuilds —
+  no blind resubmission, since "submitted but response lost" cannot be
+  distinguished from "never submitted"), dropped-from-mempool via
+  `TxStatus.DROPPED` with a grace window.
 - WebView render-process death: PxeSession rejects all in-flight RPCs,
   reboots the session (re-`boot` + `restoreAccounts`), UI shows a recoverable
   error state. In-flight txs stay "pending" and resolve via receipt polling
@@ -307,5 +353,40 @@ and accepted/rejected with reasons, then a local commit.
 
 ## Codex feedback log
 
-- Round 1 (on this plan): pending — run before M1 starts; findings and
-  accept/reject rationale will be recorded here.
+### Round 1 (on this plan, 2026-07-02, codex v0.141.0)
+
+10 findings; each verified against v5.0.0-rc.2 sources under
+`rn-spike/webview-pxe/node_modules/@aztec` before acting.
+
+1. **Accepted (verified).** No-wait sends must use the `NO_WAIT` constant
+   (`aztec.js/dest/contract/interaction_options.d.ts`), returning
+   `TxSendResultImmediate`. Plan updated.
+2. **Accepted.** Pending recovery now has explicit `building`/`submitting`/
+   `submitted` states; receipt polling only after a persisted txHash; no
+   blind resubmission.
+3. **Accepted.** WebView runtime hardening added as M1/M2 exit criteria
+   (release debugging off, origin pinning, no mixed content, message shape
+   validation both directions).
+4. **Accepted in part.** Replaced "secure origin is enough" with a real
+   feature probe for the encrypted-store stretch. REJECTED the specific
+   claim that sqlite-opfs "checks SharedArrayBuffer/Atomics and requires
+   COOP/COEP": the shipped v5 store uses the sqlite `opfs-sahpool` VFS
+   (`installOpfsSAHPoolVfs`, `kv-store/dest/sqlite-opfs/worker.js`) and
+   contains no SAB/`crossOriginIsolated` references — SAH pool exists
+   precisely to avoid cross-origin isolation. The probe covers what it does
+   need: module worker + OPFS sync access handles + a real open round trip.
+5. **Accepted.** Fixed loopback port: fail hard on bind failure with
+   recovery UX; never silently change port (origin change orphans the DB).
+6. **Accepted.** Process-isolation wording made honest (removes peak from
+   the UI/WebView process; total UID/device pressure unchanged and still
+   measured); cache payload files are app-private and cleaned up.
+7. **Accepted.** Account-deploy options spelled out exactly as the proven
+   spike used them (all three skip* flags explicitly false).
+8. **Accepted (verified).** Poller spec now maps the real v5 `TxStatus`
+   union (`stdlib/dest/tx/tx_receipt.d.ts`): PENDING, mined statuses,
+   DROPPED with grace window; network errors handled separately.
+9. **Accepted.** M1/M2 numbering inconsistency fixed (persistence fail-fast
+   is M1).
+10. **Accepted.** Exact walletDb override spelled out
+    (`walletDb: { store: await openTmpStore(true) }` from
+    `@aztec/kv-store/indexeddb`), with the two failure directions named.
