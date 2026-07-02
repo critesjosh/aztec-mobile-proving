@@ -18,13 +18,15 @@ peak_webview=0
 peak_total=0
 
 pss_of() {
-  # dumpsys meminfo -s <proc>: "TOTAL PSS:   123456" (kB)
+  # dumpsys meminfo -s <proc-or-pid>: "TOTAL PSS:   123456" (kB)
   adb shell dumpsys meminfo -s "$1" 2>/dev/null | awk '/TOTAL PSS:/ {print $3; exit}'
 }
 
-webview_proc() {
-  # The sandboxed renderer shows up as <pkg>:sandboxed_process0 (suffix varies).
-  adb shell ps -A -o NAME 2>/dev/null | grep -m1 "^${pkg}:sandboxed" || true
+webview_pid() {
+  # The sandboxed renderer runs under the WebView provider's process name
+  # (com.google.android.webview:sandboxed_processN:...), not the app's, so
+  # match by name and take the first PID (single-WebView-app assumption).
+  adb shell ps -A 2>/dev/null | awk '/sandboxed_process/ {print $2; exit}' || true
 }
 
 trap 'echo; echo "PEAKS  app=${peak_app}kB  webview=${peak_webview}kB  total=${peak_total}kB"; exit 0' INT TERM
@@ -32,10 +34,10 @@ trap 'echo; echo "PEAKS  app=${peak_app}kB  webview=${peak_webview}kB  total=${p
 echo "watching $pkg (+ WebView renderer) every ${interval}s — Ctrl-C to stop"
 while true; do
   app=$(pss_of "$pkg"); app=${app:-0}
-  wv_name=$(webview_proc)
+  wv_pid=$(webview_pid)
   wv=0
-  if [ -n "$wv_name" ]; then
-    wv=$(pss_of "$wv_name"); wv=${wv:-0}
+  if [ -n "$wv_pid" ]; then
+    wv=$(pss_of "$wv_pid"); wv=${wv:-0}
   fi
   total=$((app + wv))
   [ "$app" -gt "$peak_app" ] && peak_app=$app

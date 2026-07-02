@@ -168,6 +168,7 @@ export class WalletController {
         if (acct.address && address !== acct.address) {
           throw new Error(`restored address mismatch: ${address} != ${acct.address}`);
         }
+        this.log(`account restored (deployed=${acct.deployed})`);
         this.setAccountState(acct.alias, address, acct.deployed, acct.deployTxHash);
         this.update({phase: 'ready'});
         this.startPoller();
@@ -262,6 +263,7 @@ export class WalletController {
   }
 
   private async track(kind: TxKind, label: string, txHash: string, meta?: Record<string, string>) {
+    this.log(`submitted ${label}: ${txHash}`);
     await this.txStore.add({txHash, kind, label, meta});
     this.startPoller();
   }
