@@ -1,0 +1,13 @@
+[package]
+name = "prover-cli"
+version.workspace = true
+edition.workspace = true
+description = "CLI over noir-prover: prove an ivc-inputs.msgpack, emit flat proof fields + vk. Runs on host or on-device (adb)."
+
+[[bin]]
+name = "bb-chonk-prove"
+path = "src/main.rs"
+
+[dependencies]
+noir-prover = { path = "../noir-prover" }
+serde_json.workspace = true

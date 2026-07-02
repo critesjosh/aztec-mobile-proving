@@ -195,6 +195,62 @@ Fix (baked into this repo):
 
 On iOS this is unnecessary (Apple's libc++ is `std::__1`).
 
+## Testnet (hybrid: real txs proven by the native prover)
+
+The app proves precomputed stacks. To send a **real Aztec testnet tx** you also
+need witness generation (PXE), tx assembly, node submission, and fees — none of
+which are on-device. `testnet/` is a Node harness that supplies those via
+aztec.js@5.0.0-rc.2 while **injecting this repo's native prover** as a custom
+`PrivateKernelProver`: PXE does witgen, our native Rust prover produces the
+ClientIVC proof (on-device via `BRIDGE=adb`, or on host as fallback), and the
+proof is submitted to testnet. This is also the **reference implementation for a
+future React-Native on-device PXE wallet** (see `testnet/README.md`).
+
+Testnet params (verified live): node `https://v5.testnet.rpc.aztec-labs.com`,
+L1 Sepolia (chain 11155111), rollup version 2787991301, SponsoredFPC
+`0x1969…944d7` (deployed, confirmed) — all matching this repo's v5.0.0-rc.2 pin.
+
+### Status — real txs landed on testnet
+
+Both required flows landed on Aztec testnet, each with the ClientIVC proof
+produced by this repo's native prover (host native lib; `BRIDGE=adb` proves the
+same on the phone) and fees paid by the SponsoredFPC:
+
+| Flow | tx hash | status | native prove | circuits |
+|---|---|---|---|---|
+| Account deploy (ecdsa_r1) | `0x1175e4c5ad3fb1f00019be5591052358c1f28d920bdf90ec2e174212f67c5aac` | checkpointed (block 2624) | 1,278 ms | 11 |
+| Private token transfer | `0x29bc8d7dc3d3ac13d7ff55cdd84ce5d6b333311040924787a07ad84d10b5ca69` | proposed (block 2628) | 1,203 ms | 7 |
+
+The transfer run also deployed a Token (`0x0639d5…`) and did a private
+`mint_to_private` (`0x245d58…`), both native-proven. Explorer:
+`https://testnet.aztecscan.xyz/tx/<hash>`.
+
+The load-bearing correctness path is confirmed by these landing: native prover →
+flat proof fields (layout == bb.js `flattenChonkProofFields`) →
+`ChonkProofWithPublicInputs.fromBufferArray(...)` → PXE `node.sendTx` → accepted
+and checkpointed on-chain.
+
+**The unblock:** the account-deploy tx must publish the account contract class
+in-tx (`skipClassPublication: false`) — the ECDSA-R class was not already
+published on this testnet instance, so skipping it caused a
+`verifyReadRequests` "unknown nullifier" during simulation. With class
+publication enabled and `from: NO_FROM` (self-deploy), it lands.
+
+### Benchmark (measured on this run)
+
+| Flow | connect+PXE | witgen+prove+submit+mined | native ClientIVC prove | native peak RSS | total |
+|---|---|---|---|---|---|
+| Account deploy | 1,451 ms | 18,144 ms | 1,278 ms | 372 MB | 19,732 ms |
+| Private transfer (deploy+mint+transfer) | 1,516 ms | — | 1,203 ms (transfer) | 320–353 MB | 48,738 ms |
+
+The transfer total covers three sequential mined txs (token deploy 18,753 ms,
+mint 16,973 ms, transfer 11,369 ms). "witgen+prove+submit+mined" is one phase
+here because `send()` waits for mining; the native prove is the sub-second-ish
+ClientIVC portion, the rest is PXE witgen + network inclusion. First tx is
+slower (proving-key download); testnet inclusion time varies. Proving here ran
+on the host native lib; `BRIDGE=adb` produces the identical proof on-device
+(~1.4–2.2 s ClientIVC on the emulator, per the app benchmarks above).
+
 ## Provenance / attribution
 
 All ZK machinery is Aztec's. Vendored/derived from

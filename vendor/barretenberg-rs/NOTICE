@@ -23,4 +23,10 @@ The generated sources `src/api.rs` and `src/generated_types.rs` are produced
 upstream by `yarn generate` from barretenberg's msgpack schema; they are
 committed here so this crate builds without the TypeScript toolchain.
 
+Known follow-up (inherited from upstream, intentionally not patched here to keep
+this a faithful copy): `build.rs` downloads the prebuilt `libbb-external.a` from
+the pinned GitHub release over HTTPS without a SHA-256/signature check. For a
+hardened build, pin a per-`version+arch` checksum (or set BB_LIB_DIR to a
+locally-verified lib). Tracked as a supply-chain hardening item.
+
 Upstream: https://github.com/AztecProtocol/aztec-packages/tree/v5.0.0-rc.2/barretenberg/rust/barretenberg-rs

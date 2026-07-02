@@ -17,5 +17,11 @@ android/app/src/main/jniLibs/
 # Noir circuit build output (regenerate with nargo compile)
 circuits/*/target/
 
+# Testnet harness: secrets + deps (NEVER commit .env)
+.env
+**/.env
+testnet/node_modules/
+node_modules/
+
 # OS
 .DS_Store

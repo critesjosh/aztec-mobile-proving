@@ -39,6 +39,9 @@ pub struct ChonkStepTiming {
 
 pub struct ChonkFlowOutput {
     pub proof: ChonkProof,
+    /// Flattened proof fields (32-byte big-endian Fr each), the layout the
+    /// PXE's ChonkProofWithPublicInputs.fromBufferArray expects.
+    pub proof_fields: Vec<Vec<u8>>,
     pub vk: Vec<u8>,
     pub verified: bool,
     pub num_circuits: usize,
@@ -116,9 +119,11 @@ impl NoirProver {
         let verify_ms = t.elapsed().as_millis();
 
         let proof_size_bytes = proof_size(&proof);
+        let proof_fields = flatten_proof_fields(&proof);
 
         Ok(ChonkFlowOutput {
             proof,
+            proof_fields,
             vk,
             verified,
             num_circuits,
@@ -130,6 +135,20 @@ impl NoirProver {
             proof_size_bytes,
         })
     }
+}
+
+/// Flatten a structured ChonkProof into the flat `Fr[]` layout that
+/// `ChonkProofWithPublicInputs.fromBufferArray` expects. Order matches bb.js
+/// `flattenChonkProofFields` and C++ `ChonkProof::to_field_elements()`:
+/// hiding_oink_proof, merge_proof, eccvm_proof, ipa_proof, joint_proof.
+pub fn flatten_proof_fields(proof: &ChonkProof) -> Vec<Vec<u8>> {
+    let mut out = Vec::new();
+    out.extend(proof.hiding_oink_proof.iter().cloned());
+    out.extend(proof.merge_proof.iter().cloned());
+    out.extend(proof.eccvm_proof.iter().cloned());
+    out.extend(proof.ipa_proof.iter().cloned());
+    out.extend(proof.joint_proof.iter().cloned());
+    out
 }
 
 fn proof_size(proof: &ChonkProof) -> usize {

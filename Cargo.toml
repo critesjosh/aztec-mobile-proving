@@ -4,6 +4,7 @@ members = [
     "vendor/barretenberg-rs",
     "crates/noir-prover",
     "crates/noir-prover-jni",
+    "crates/prover-cli",
 ]
 
 [workspace.package]

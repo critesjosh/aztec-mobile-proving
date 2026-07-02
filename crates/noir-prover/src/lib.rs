@@ -18,7 +18,7 @@ pub mod ultrahonk;
 #[cfg(feature = "ultrahonk")]
 pub mod witgen;
 
-pub use chonk::{parse_ivc_inputs, ChonkFlowOutput, ChonkStep};
+pub use chonk::{flatten_proof_fields, parse_ivc_inputs, ChonkFlowOutput, ChonkStep};
 pub use error::{ProverError, Result};
 pub use prover::NoirProver;
 pub use srs::{load_bn254_srs, load_grumpkin_srs, SrsData};

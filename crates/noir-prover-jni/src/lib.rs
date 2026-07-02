@@ -71,8 +71,24 @@ pub extern "system" fn Java_foundation_aztec_noirprover_NativeProver_initSrs(
         Err(e) => return throw_and_default(&mut env, &format!("bad grumpkin array: {e}")),
     };
     run_json(&mut env, move || {
-        let num_points = (g1_bytes.len() / noir_prover::srs::BN254_POINT_SIZE) as u32;
-        let grumpkin_points = (grumpkin_bytes.len() / noir_prover::srs::BN254_POINT_SIZE) as u32;
+        // Validate buffer sizes at the JNI boundary (unlike srs.rs file loading,
+        // these come straight from Kotlin). 64 bytes/G1 point, 128-byte G2.
+        let pt = noir_prover::srs::BN254_POINT_SIZE;
+        if g1_bytes.is_empty() || g1_bytes.len() % pt != 0 {
+            return Err(format!("g1 length {} must be a positive multiple of {pt}", g1_bytes.len()));
+        }
+        if g2_bytes.len() != noir_prover::srs::G2_POINT_SIZE {
+            return Err(format!(
+                "g2 length {} must be {}",
+                g2_bytes.len(),
+                noir_prover::srs::G2_POINT_SIZE
+            ));
+        }
+        if grumpkin_bytes.len() % pt != 0 {
+            return Err(format!("grumpkin length {} must be a multiple of {pt}", grumpkin_bytes.len()));
+        }
+        let num_points = (g1_bytes.len() / pt) as u32;
+        let grumpkin_points = (grumpkin_bytes.len() / pt) as u32;
         let mut prover = NoirProver::new().map_err(|e| e.to_string())?;
         prover
             .init_srs(&SrsData {

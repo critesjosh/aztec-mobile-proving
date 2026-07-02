@@ -1,0 +1,27 @@
+{
+  "name": "aztec-mobile-proving-testnet",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Hybrid testnet harness: PXE witgen + native mobile prover -> real Aztec testnet txs",
+  "scripts": {
+    "deploy-account": "tsx src/deploy_account.ts",
+    "transfer": "tsx src/private_transfer.ts"
+  },
+  "dependencies": {
+    "@aztec/aztec.js": "5.0.0-rc.2",
+    "@aztec/accounts": "5.0.0-rc.2",
+    "@aztec/noir-contracts.js": "5.0.0-rc.2",
+    "@aztec/wallets": "5.0.0-rc.2",
+    "@aztec/stdlib": "5.0.0-rc.2",
+    "@aztec/pxe": "5.0.0-rc.2",
+    "@aztec/foundation": "5.0.0-rc.2",
+    "@aztec/constants": "5.0.0-rc.2",
+    "dotenv": "^16.4.5"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3",
+    "@types/node": "^22.9.0"
+  }
+}

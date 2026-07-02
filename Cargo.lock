@@ -1185,6 +1185,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "prover-cli"
+version = "0.1.0"
+dependencies = [
+ "noir-prover",
+ "serde_json",
+]
+
+[[package]]
 name = "quote"
 version = "1.0.46"
 source = "registry+https://github.com/rust-lang/crates.io-index"
