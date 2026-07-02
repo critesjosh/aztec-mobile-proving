@@ -24,6 +24,7 @@ const {Prover} = NativeModules as {
   Prover: {
     initSrs(): Promise<string>;
     chonkProve(ivcInputsB64: string): Promise<string>;
+    benchStack(assetPath: string): Promise<string>;
   };
 };
 
@@ -150,16 +151,82 @@ export default function App() {
     });
   }, [log]);
 
+  // MEASUREMENT: prove a bundled flow stack on-device and quantify each phase,
+  // isolating native prove from the JSON bridge cost (resolve + JSON.parse of
+  // the 2630/4133-field proof). Witgen is not exercised here (needs live PXE
+  // state); native prove + bridge marshalling are the measurable on-device costs.
+  const bench = useCallback(
+    async (label: string, asset: string, circuits: number) => {
+      setBusy(true);
+      log(`=== bench ${label} (${circuits} circuits) ===`);
+      try {
+        const t0 = Date.now();
+        const json = await Prover.benchStack(asset); // native prove + returns JSON
+        const wallMs = Date.now() - t0; // full JS->native->JS round trip
+        const tParse = Date.now();
+        const r = JSON.parse(json);
+        const parseMs = Date.now() - tParse;
+        // Honest attribution: native_call_wall_ms is the JNI prove call wall
+        // (native prove + Rust JSON serialize) measured on the Kotlin side.
+        // Residual = the RN bridge transfer of the result JSON (Kotlin->JS),
+        // i.e. what a JSI/TurboModule would eliminate. JSON.parse is separate.
+        const bridgeXferMs = wallMs - (r.native_call_wall_ms ?? r.total_ms) - (r.native_read_ms ?? 0) - parseMs;
+        log(
+          `native: prove=${r.prove_ms}ms vk=${r.vk_ms}ms verify=${r.verify_ms}ms ` +
+            `total=${r.total_ms}ms callWall=${r.native_call_wall_ms}ms ` +
+            `peakRss=${r.peak_rss_mb}MB fields=${r.proof_fields.length}`,
+        );
+        log(
+          `bridge: resultJSON=${(r.result_json_bytes / 1e6).toFixed(2)}MB ` +
+            `xfer≈${bridgeXferMs}ms JSON.parse=${parseMs}ms wall=${wallMs}ms`,
+        );
+      } catch (e: any) {
+        log(`bench ${label} FAILED: ${e?.message ?? e}`);
+      } finally {
+        setBusy(false);
+      }
+    },
+    [log],
+  );
+
+  const transferFlow = useCallback(() => {
+    setBusy(true);
+    log('=== transfer flow (deploy acct+token, mint, transfer; on-device) ===');
+    post({
+      type: 'transferFlow',
+      nodeUrl: NODE_URL,
+      sponsoredFpc: SPONSORED_FPC,
+      secret: randHex(31),
+      salt: randHex(31),
+      signingKey: randHex(32),
+    });
+  }, [log]);
+
   return (
     <SafeAreaView style={{flex: 1, padding: 12}}>
       <Text style={{fontSize: 18, fontWeight: 'bold'}}>
         Aztec on-device PXE spike
       </Text>
-      <View style={{flexDirection: 'row', gap: 8, marginVertical: 8}}>
+      <View style={{flexDirection: 'row', gap: 8, marginVertical: 8, flexWrap: 'wrap'}}>
         <Btn title="1. Init SRS" onPress={initSrs} disabled={busy} />
         <Btn
           title="2. Deploy account"
           onPress={deployAccount}
+          disabled={busy || !srsReady}
+        />
+        <Btn
+          title="Bench transfer (7)"
+          onPress={() => bench('token_transfer', 'flows/token_transfer.msgpack', 7)}
+          disabled={busy || !srsReady}
+        />
+        <Btn
+          title="Bench AMM (14)"
+          onPress={() => bench('amm_add_liquidity', 'flows/amm_add_liquidity.msgpack', 14)}
+          disabled={busy || !srsReady}
+        />
+        <Btn
+          title="Transfer flow (witgen)"
+          onPress={transferFlow}
           disabled={busy || !srsReady}
         />
       </View>

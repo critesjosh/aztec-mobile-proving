@@ -75,11 +75,30 @@ window.__aztecOnHostMessage = async (msg: any) => {
       }
     } else if (msg.type === 'deployAccount') {
       await deployAccount(msg);
+    } else if (msg.type === 'transferFlow') {
+      await transferFlow(msg);
     }
   } catch (e: any) {
     toHost({ type: 'error', error: e?.stack ?? String(e) });
   }
 };
+
+// Shared setup: connect + native-prover-injected wallet + sponsored FPC.
+async function setup(msg: { nodeUrl: string; sponsoredFpc: string }) {
+  const simulator = new WASMSimulator();
+  const delegate = new BBLazyPrivateKernelProver(simulator, {});
+  const nativeProver = makeNativeChonkProver(delegate, proveOverBridge);
+  toHost({ type: 'status', phase: 'wasm:acvm-init' });
+  const wallet = await BrowserEmbeddedWallet.create(msg.nodeUrl, {
+    ephemeral: true,
+    pxe: { proverEnabled: true, proverOrOptions: nativeProver, simulator },
+  });
+  const fpc = await getSponsoredFPC();
+  await wallet.registerContract(fpc.instance, fpc.artifact);
+  const paymentMethod = new SponsoredFeePaymentMethod(AztecAddress.fromStringUnsafe(msg.sponsoredFpc));
+  toHost({ type: 'status', phase: 'pxe:ready' });
+  return { wallet, paymentMethod };
+}
 
 async function getSponsoredFPC() {
   const { SponsoredFPCContractArtifact } = await import('@aztec/noir-contracts.js/SponsoredFPC');
@@ -131,6 +150,62 @@ async function deployAccount(msg: {
     fee: { paymentMethod },
     wait: { timeout: 1200, interval: 5 },
   });
+  const txHash = receipt.txHash.toString();
+  toHost({
+    type: 'result',
+    txHash,
+    status: receipt.status,
+    explorer: `https://testnet.aztecscan.xyz/tx/${txHash}`,
+  });
+}
+
+// Full on-device transfer flow to MEASURE WebView witgen for a real 7-circuit
+// private transfer (+ bonus device-originated tx hash). Deploys account+token,
+// mints privately, then transfers. The PXE logs "Private kernel witness
+// generation took Xms" per tx (captured by the host from chromium console).
+async function transferFlow(msg: {
+  nodeUrl: string;
+  sponsoredFpc: string;
+  secret: string;
+  salt: string;
+  signingKey: string;
+}) {
+  toHost({ type: 'status', phase: 'boot:start', data: { nodeUrl: msg.nodeUrl } });
+  const { wallet, paymentMethod } = await setup(msg);
+  const wait = { timeout: 1200, interval: 5 } as const;
+  const fee = { paymentMethod };
+
+  const account = await wallet.createECDSARAccount(
+    Fr.fromString(msg.secret),
+    Fr.fromString(msg.salt),
+    hexToBytes(msg.signingKey),
+    'rn-bench',
+  );
+  const from = account.address;
+  toHost({ type: 'status', phase: 'account', data: { address: from.toString() } });
+
+  toHost({ type: 'status', phase: 'deploy-account:proving' });
+  await (await account.getDeployMethod()).send({
+    from: NO_FROM,
+    skipClassPublication: false,
+    fee,
+    wait,
+  });
+
+  const { TokenContract } = await import('@aztec/noir-contracts.js/Token');
+  toHost({ type: 'status', phase: 'deploy-token:proving' });
+  const { contract: token } = await TokenContract.deploy(wallet, from, 'BenchTok', 'BTK', 18).send({
+    from,
+    fee,
+    wait,
+  });
+  toHost({ type: 'status', phase: 'token', data: { address: token.address.toString() } });
+
+  toHost({ type: 'status', phase: 'mint:proving' });
+  await token.methods.mint_to_private(from, 1000n).send({ from, fee, wait });
+
+  toHost({ type: 'status', phase: 'transfer:proving' });
+  const { receipt } = await token.methods.transfer(from, 100n).send({ from, fee, wait });
   const txHash = receipt.txHash.toString();
   toHost({
     type: 'result',

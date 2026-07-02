@@ -35,6 +35,8 @@ rn-spike/AztecPxeSpike/android/app/src/main/jniLibs/
 # regenerate via webview-pxe `vite build` + scripts/prepare-srs.sh.
 rn-spike/AztecPxeSpike/android/app/src/main/assets/pxe/
 rn-spike/AztecPxeSpike/android/app/src/main/assets/srs/
+# Bundled flow witness stacks are copies of the repo's assets/flows (benchmark input).
+rn-spike/AztecPxeSpike/android/app/src/main/assets/flows/
 rn-spike/AztecPxeSpike/ios/Pods/
 rn-spike/AztecPxeSpike/vendor/
 

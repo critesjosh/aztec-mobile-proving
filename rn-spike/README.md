@@ -182,6 +182,73 @@ Native prove on the emulator was ~2.0 s (vs ~1.1–1.3 s on host — emulator is
 slower; a real arm64 device would differ again). App proving-relevant peak was
 comparable to the standalone app benchmarks.
 
+### 5. Heavier-flow measurement pass (7 → 14 circuits)
+
+All numbers are **x86_64 emulator (API 36)**; a physical arm64 device is
+unmeasured and remains the open perf risk (see caveats).
+
+**A. Real on-device transfer flow** (deploy account → deploy token → mint →
+private transfer, all through the WebView-PXE + native-prover path). Per-tx,
+the WebView single-threaded WASM **witgen** vs the native ClientIVC **prove**:
+
+| tx | circuits | WebView witgen (WASM) | native prove | proof fields |
+|---|---|---|---|---|
+| account deploy | 11 | 777 ms | 2082 ms | 2630 |
+| token deploy | ~12 | 847 ms | 1735 ms | 4133 |
+| mint (private) | ~12 | 957 ms | 1416 ms | 4133 |
+| **private transfer** | **7** | **695 ms** | **1473 ms** | 2630 |
+
+The transfer landed on testnet:
+`0x10cd26a8df0991e104976f042a027ea2ca16afc1342e49bb77da1d9499bfe7c6`
+(proposed, block 2718) — a second device-originated tx type.
+
+**B. Native prove + bridge cost for the two target stacks** (bundled realistic
+witness stacks proven via the native module, 2 runs each — isolates prove +
+the output-bridge marshalling, no WebView):
+
+| stack | circuits | native prove | vk | verify | load+accum | native total | peak RSS | proof fields | result JSON | bridge xfer | JSON.parse |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| token_transfer | 7 | 1432–1473 ms | 182–270 ms | 31–73 ms | ~1.8 s | 3.60–3.64 s | 713–814 MB | 2630 | 0.19 MB | 8–24 ms | 0–1 ms |
+| amm_add_liquidity | 14 | 1917–2220 ms | 192–205 ms | 33–34 ms | ~5.4 s | 7.76–8.52 s | 814 MB | 4133 | 0.29 MB | 8–14 ms | 0–3 ms |
+
+(Host x86_64 baseline: transfer total 2.42 s / 320 MB; AMM total 4.46 s / 390 MB.)
+
+**Reads on the three questions:**
+
+1. **Does single-threaded WebView witgen scale 7 → 14?** Yes, comfortably. Witgen
+   stayed **sub-1 second per tx** across the whole transfer flow (695–957 ms) and
+   is *not* the bottleneck — native prove (1.4–2.2 s) dominates. Witgen cost
+   tracks per-tx circuit complexity, not a runaway with stack depth, because the
+   WASM simulator runs each circuit's ACVM once. AMM (14) witgen wasn't measured
+   end-to-end (needs an AMM+2-token+liquidity setup, disproportionate for a
+   measurement pass), but the flat sub-1s trend across the 7–12 circuit txs
+   strongly suggests 14 stays in the low seconds, not a cliff.
+
+2. **The load+accumulate phase is where circuit count actually bites**: native
+   total grew 3.6 s → 7.8 s (7 → 14) driven almost entirely by ClientIVC
+   load+accumulate (~1.8 s → ~5.4 s), while the final `prove` grew only
+   1.4 → 2.0 s. So heavier txs are gated by **native accumulation**, on the
+   native prover, not by WebView witgen. That's the scaling axis to watch.
+
+3. **Bridge overhead is negligible** — marshalling the 2630/4133-field proof +
+   VK as JSON across WebView→RN→JNI and back cost **8–24 ms transfer + ≤3 ms
+   JSON.parse** for a 0.19–0.29 MB payload. A JSI/TurboModule rewrite is a
+   **later optimization, not a must-have**; the bridge is ~0.3% of end-to-end.
+
+**Memory**: native prove peak RSS rose to **~0.7–0.8 GB on-device** (higher than
+the ~0.3–0.4 GB host figure — emulator/ART overhead + the WebView process
+alongside). This is the number most likely to bite a low-RAM physical device: a
+14-circuit AMM at ~0.8 GB plus a Chromium WebView plus RN/Hermes could pressure
+a 2–3 GB phone. Worth validating on real hardware before committing to a wallet.
+
+**Viability read**: the WebView-hybrid is a **viable foundation** for a full
+wallet on this evidence — witgen scales fine, the bridge is cheap, and heavier
+txs are limited by the native prover (which we already own and can optimize),
+not by the WebView or the bridge. The one thing that argues for caution (not
+rearchitecting) is **peak memory on real low-RAM devices** and the fact that all
+numbers are emulator-only. No result here argues for abandoning the WebView
+approach before the wallet.
+
 ### What fought back (honest build log)
 
 1. **Hermes cannot boot the PXE** — no `WebAssembly`/`IndexedDB`. Resolved by

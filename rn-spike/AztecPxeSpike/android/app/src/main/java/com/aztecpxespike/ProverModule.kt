@@ -6,7 +6,7 @@ import com.facebook.react.bridge.ReactApplicationContext
 import com.facebook.react.bridge.ReactContextBaseJavaModule
 import com.facebook.react.bridge.ReactMethod
 import foundation.aztec.noirprover.NativeProver
-import java.io.File
+import kotlin.system.measureTimeMillis
 
 /**
  * RN native module `Prover` bridging JS <-> this repo's native ClientIVC prover
@@ -52,10 +52,36 @@ class ProverModule(private val ctx: ReactApplicationContext) : ReactContextBaseJ
         }.start()
     }
 
+    /**
+     * MEASUREMENT: prove a bundled flow stack (assets/flows/<name>.msgpack) and
+     * return the full chonkProve JSON. Isolates native prove + the size of the
+     * proof-fields JSON that must cross the bridge, without the WebView. Also
+     * reports read/decode timing on the native side.
+     */
+    @ReactMethod
+    fun benchStack(assetPath: String, promise: Promise) {
+        Thread {
+            try {
+                lateinit var ivc: ByteArray
+                val readMs = measureTimeMillis { ivc = readAsset(assetPath) }
+                lateinit var res: String
+                // Wall time of the JNI prove call (native prove + the Rust-side
+                // JSON serialization of the ~2630/4133-field result).
+                val callWallMs = measureTimeMillis { res = NativeProver.chonkProve(ivc) }
+                val out = org.json.JSONObject(res)
+                out.put("native_read_ms", readMs)
+                out.put("native_call_wall_ms", callWallMs)
+                out.put("ivc_bytes", ivc.size)
+                val finalJson = out.toString()
+                out.put("result_json_bytes", finalJson.toByteArray(Charsets.UTF_8).size)
+                promise.resolve(out.toString())
+            } catch (e: Throwable) {
+                promise.reject("benchStack", e.message, e)
+            }
+        }.start()
+    }
+
     private fun readAsset(path: String): ByteArray {
         ctx.assets.open(path).use { return it.readBytes() }
     }
-
-    // Suppress unused import warning; File kept for future on-device SRS cache.
-    private fun unusedFile() = File("")
 }
