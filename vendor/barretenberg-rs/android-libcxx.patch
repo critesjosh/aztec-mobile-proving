@@ -1,0 +1,20 @@
+--- a/build.rs	2026-07-02 11:57:26.103757764 -0400
++++ b/build.rs	2026-07-02 10:44:44.197377242 -0400
+@@ -11,8 +11,15 @@
+         println!("cargo:rustc-link-lib=static=bb-external");
+ 
+         // Link C++ standard library
+-        // barretenberg is built with Clang/libc++ on all platforms
+-        println!("cargo:rustc-link-lib=dylib=c++");
++        // barretenberg is built with Clang/libc++ on all platforms.
++        // On Android the NDK's libc++ uses the std::__ndk1 ABI namespace and
++        // cannot satisfy the std::__1 symbols in the Zig-built static lib, so
++        // the consumer must supply a std::__1 libc++ (e.g. Zig's) via linker
++        // args instead of `-lc++`.
++        let target = std::env::var("TARGET").unwrap_or_default();
++        if !target.contains("android") {
++            println!("cargo:rustc-link-lib=dylib=c++");
++        }
+     }
+ }
+ 

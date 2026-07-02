@@ -1,0 +1,26 @@
+barretenberg-rs (vendored, patched)
+===================================
+
+This is a vendored copy of `barretenberg-rs` from the Aztec `aztec-packages`
+monorepo, tag **v5.0.0-rc.2**
+(barretenberg/rust/barretenberg-rs), licensed Apache-2.0 (see LICENSE).
+
+It is vendored here rather than pulled from crates.io because it carries one
+local patch that is not yet upstream:
+
+  * build.rs: on Android targets, do NOT emit `-lc++`. The prebuilt Android
+    static library (libbb-external.a) is built with Zig, whose libc++ uses the
+    standard `std::__1` ABI namespace, while the Android NDK's libc++ uses
+    `std::__ndk1` and cannot satisfy those symbols. The consumer must instead
+    link a `std::__1` libc++ (e.g. Zig's) via linker args. See
+    `android-libcxx.patch` for the exact diff and the top-level README for the
+    full explanation.
+
+The `crates.io` release `barretenberg-rs@5.0.0-rc.2` is otherwise identical but
+lacks this patch (it always emits `-lc++`, which fails to link on Android).
+
+The generated sources `src/api.rs` and `src/generated_types.rs` are produced
+upstream by `yarn generate` from barretenberg's msgpack schema; they are
+committed here so this crate builds without the TypeScript toolchain.
+
+Upstream: https://github.com/AztecProtocol/aztec-packages/tree/v5.0.0-rc.2/barretenberg/rust/barretenberg-rs

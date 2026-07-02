@@ -1,0 +1,21 @@
+# Rust
+/target/
+**/target/
+# Cargo.lock IS committed (pins the noir git deps for reproducible builds).
+
+# Android / Gradle
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+android/.idea/
+*.iml
+
+# Built native libs (produced by scripts/build-jni.sh)
+android/app/src/main/jniLibs/
+
+# Noir circuit build output (regenerate with nargo compile)
+circuits/*/target/
+
+# OS
+.DS_Store

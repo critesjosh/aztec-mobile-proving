@@ -1,0 +1,6 @@
+[package]
+name = "hash_chain512"
+type = "bin"
+authors = [""]
+
+[dependencies]

@@ -1,0 +1,22 @@
+[package]
+name = "noir-prover-jni"
+version.workspace = true
+edition.workspace = true
+description = "JNI bindings exposing noir-prover to Android/Kotlin"
+
+[lib]
+name = "noir_prover_jni"
+crate-type = ["cdylib"]
+
+[dependencies]
+noir-prover = { path = "../noir-prover" }
+barretenberg-rs.workspace = true
+serde_json.workspace = true
+jni = "0.21"
+
+[features]
+# Default enables the on-device ACVM/UltraHonk demo (prove/verifyLast JNI
+# methods). Build with --no-default-features for a ClientIVC-only .so that
+# depends solely on barretenberg-rs (no noir git crates).
+default = ["ultrahonk"]
+ultrahonk = ["noir-prover/ultrahonk"]

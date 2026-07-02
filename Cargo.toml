@@ -1,0 +1,37 @@
+[workspace]
+resolver = "2"
+members = [
+    "vendor/barretenberg-rs",
+    "crates/noir-prover",
+    "crates/noir-prover-jni",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+
+[workspace.dependencies]
+# Patched barretenberg-rs (Android libc++ fix), vendored in-tree. See
+# vendor/barretenberg-rs/NOTICE. Pinned to aztec-packages v5.0.0-rc.2.
+barretenberg-rs = { path = "vendor/barretenberg-rs", default-features = false, features = ["ffi"] }
+
+# Noir ACVM crates for on-device witness generation. Only used by the OPTIONAL
+# `ultrahonk` feature of noir-prover. Pinned to the same rev the barretenberg
+# release was built against (tag v1.0.0-beta.22). These are NOT cleanly on
+# crates.io at this version, so we use git deps.
+acir = { git = "https://github.com/noir-lang/noir", tag = "v1.0.0-beta.22" }
+acvm = { git = "https://github.com/noir-lang/noir", tag = "v1.0.0-beta.22" }
+bn254_blackbox_solver = { git = "https://github.com/noir-lang/noir", tag = "v1.0.0-beta.22" }
+noirc_abi = { git = "https://github.com/noir-lang/noir", tag = "v1.0.0-beta.22" }
+
+flate2 = "1"
+serde = { version = "1", features = ["derive"] }
+serde_bytes = "0.11"
+serde_json = "1"
+rmp-serde = "1.1"
+base64 = "0.21"
+thiserror = "1"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
