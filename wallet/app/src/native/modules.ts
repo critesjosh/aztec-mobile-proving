@@ -7,6 +7,11 @@ export interface ProverModule {
   initSrs(): Promise<string>;
   /** Prove a base64 ivc-inputs.msgpack; returns chonkProve result JSON. */
   chonkProve(ivcInputsB64: string): Promise<string>;
+  /**
+   * Best-effort cancel of an in-flight chonkProve. Lands at the next circuit
+   * boundary; the final prove step still completes. Returns JSON status.
+   */
+  requestAbort(): Promise<string>;
 }
 
 export interface SecureKeysModule {

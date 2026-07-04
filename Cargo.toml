@@ -17,13 +17,23 @@ edition = "2021"
 barretenberg-rs = { path = "vendor/barretenberg-rs", default-features = false, features = ["ffi"] }
 
 # Noir ACVM crates for on-device witness generation. Only used by the OPTIONAL
-# `ultrahonk` feature of noir-prover. Pinned to the same rev the barretenberg
-# release was built against (tag v1.0.0-beta.22). These are NOT cleanly on
-# crates.io at this version, so we use git deps.
-acir = { git = "https://github.com/noir-lang/noir", tag = "v1.0.0-beta.22" }
-acvm = { git = "https://github.com/noir-lang/noir", tag = "v1.0.0-beta.22" }
-bn254_blackbox_solver = { git = "https://github.com/noir-lang/noir", tag = "v1.0.0-beta.22" }
-noirc_abi = { git = "https://github.com/noir-lang/noir", tag = "v1.0.0-beta.22" }
+# `ultrahonk` feature of noir-prover. Not cleanly on crates.io at this version,
+# so we use git deps.
+#
+# PINNED BY EXACT COMMIT, NOT TAG (deliberate — see docs/dependency-pinning.md).
+# rev c57152f91260ecdb9faad4efc20abb14b6d2ece7 is what the release tag
+# v1.0.0-beta.22 resolved to when this workspace was locked, and is the exact
+# rev the pinned barretenberg static lib was built against. A git tag can be
+# moved and, more importantly, the aztec-packages / noir toolchain pins noir by
+# SUBMODULE COMMIT, which routinely carries post-release serialization changes
+# (e.g. ACIR/witness msgpack-vs-bincode) that are NOT in the same-named release
+# tag. The `bb` postprocessor writes artifacts in the submodule commit's format,
+# so the on-device ACVM must match that commit exactly or witnesses silently
+# mis-decode. Pin the commit; keep the tag it corresponds to in this comment.
+acir = { git = "https://github.com/noir-lang/noir", rev = "c57152f91260ecdb9faad4efc20abb14b6d2ece7" }
+acvm = { git = "https://github.com/noir-lang/noir", rev = "c57152f91260ecdb9faad4efc20abb14b6d2ece7" }
+bn254_blackbox_solver = { git = "https://github.com/noir-lang/noir", rev = "c57152f91260ecdb9faad4efc20abb14b6d2ece7" }
+noirc_abi = { git = "https://github.com/noir-lang/noir", rev = "c57152f91260ecdb9faad4efc20abb14b6d2ece7" }
 
 flate2 = "1"
 serde = { version = "1", features = ["derive"] }

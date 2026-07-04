@@ -80,6 +80,12 @@ impl NoirProver {
 
         let mut step_timings = Vec::with_capacity(num_circuits);
         for step in steps {
+            // Cooperative cancel point: check before starting each circuit's
+            // load+accumulate. See abort.rs for the honest scope (a single bb
+            // call still runs to completion; abort lands at this boundary).
+            if crate::abort::is_aborted() {
+                return Err(ProverError::Aborted);
+            }
             let t = Instant::now();
             self.api().chonk_load(CircuitInput {
                 name: step.function_name.clone(),
@@ -97,6 +103,10 @@ impl NoirProver {
             });
         }
 
+        // Last cancel point before the final (non-interruptible) prove.
+        if crate::abort::is_aborted() {
+            return Err(ProverError::Aborted);
+        }
         let t = Instant::now();
         let proof = self.api().chonk_prove()?.proof;
         let prove_ms = t.elapsed().as_millis();

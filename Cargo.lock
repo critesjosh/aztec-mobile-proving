@@ -5,7 +5,7 @@ version = 3
 [[package]]
 name = "acir"
 version = "1.0.0-beta.22"
-source = "git+https://github.com/noir-lang/noir?tag=v1.0.0-beta.22#c57152f91260ecdb9faad4efc20abb14b6d2ece7"
+source = "git+https://github.com/noir-lang/noir?rev=c57152f91260ecdb9faad4efc20abb14b6d2ece7#c57152f91260ecdb9faad4efc20abb14b6d2ece7"
 dependencies = [
  "acir_field",
  "base64 0.22.1",
@@ -26,7 +26,7 @@ dependencies = [
 [[package]]
 name = "acir_field"
 version = "1.0.0-beta.22"
-source = "git+https://github.com/noir-lang/noir?tag=v1.0.0-beta.22#c57152f91260ecdb9faad4efc20abb14b6d2ece7"
+source = "git+https://github.com/noir-lang/noir?rev=c57152f91260ecdb9faad4efc20abb14b6d2ece7#c57152f91260ecdb9faad4efc20abb14b6d2ece7"
 dependencies = [
  "ark-bn254",
  "ark-ff",
@@ -41,7 +41,7 @@ dependencies = [
 [[package]]
 name = "acvm"
 version = "1.0.0-beta.22"
-source = "git+https://github.com/noir-lang/noir?tag=v1.0.0-beta.22#c57152f91260ecdb9faad4efc20abb14b6d2ece7"
+source = "git+https://github.com/noir-lang/noir?rev=c57152f91260ecdb9faad4efc20abb14b6d2ece7#c57152f91260ecdb9faad4efc20abb14b6d2ece7"
 dependencies = [
  "acir",
  "acvm_blackbox_solver",
@@ -56,7 +56,7 @@ dependencies = [
 [[package]]
 name = "acvm_blackbox_solver"
 version = "1.0.0-beta.22"
-source = "git+https://github.com/noir-lang/noir?tag=v1.0.0-beta.22#c57152f91260ecdb9faad4efc20abb14b6d2ece7"
+source = "git+https://github.com/noir-lang/noir?rev=c57152f91260ecdb9faad4efc20abb14b6d2ece7#c57152f91260ecdb9faad4efc20abb14b6d2ece7"
 dependencies = [
  "acir",
  "aes",
@@ -346,7 +346,7 @@ dependencies = [
 [[package]]
 name = "bn254_blackbox_solver"
 version = "1.0.0-beta.22"
-source = "git+https://github.com/noir-lang/noir?tag=v1.0.0-beta.22#c57152f91260ecdb9faad4efc20abb14b6d2ece7"
+source = "git+https://github.com/noir-lang/noir?rev=c57152f91260ecdb9faad4efc20abb14b6d2ece7#c57152f91260ecdb9faad4efc20abb14b6d2ece7"
 dependencies = [
  "acir",
  "acvm_blackbox_solver",
@@ -361,7 +361,7 @@ dependencies = [
 [[package]]
 name = "brillig"
 version = "1.0.0-beta.22"
-source = "git+https://github.com/noir-lang/noir?tag=v1.0.0-beta.22#c57152f91260ecdb9faad4efc20abb14b6d2ece7"
+source = "git+https://github.com/noir-lang/noir?rev=c57152f91260ecdb9faad4efc20abb14b6d2ece7#c57152f91260ecdb9faad4efc20abb14b6d2ece7"
 dependencies = [
  "acir_field",
  "itertools",
@@ -372,7 +372,7 @@ dependencies = [
 [[package]]
 name = "brillig_vm"
 version = "1.0.0-beta.22"
-source = "git+https://github.com/noir-lang/noir?tag=v1.0.0-beta.22#c57152f91260ecdb9faad4efc20abb14b6d2ece7"
+source = "git+https://github.com/noir-lang/noir?rev=c57152f91260ecdb9faad4efc20abb14b6d2ece7#c57152f91260ecdb9faad4efc20abb14b6d2ece7"
 dependencies = [
  "acir",
  "acvm_blackbox_solver",
@@ -779,7 +779,7 @@ dependencies = [
 [[package]]
 name = "iter-extended"
 version = "1.0.0-beta.22"
-source = "git+https://github.com/noir-lang/noir?tag=v1.0.0-beta.22#c57152f91260ecdb9faad4efc20abb14b6d2ece7"
+source = "git+https://github.com/noir-lang/noir?rev=c57152f91260ecdb9faad4efc20abb14b6d2ece7#c57152f91260ecdb9faad4efc20abb14b6d2ece7"
 
 [[package]]
 name = "itertools"
@@ -925,7 +925,7 @@ dependencies = [
 [[package]]
 name = "msgpack_tagged"
 version = "1.0.0-beta.20"
-source = "git+https://github.com/noir-lang/noir?tag=v1.0.0-beta.22#c57152f91260ecdb9faad4efc20abb14b6d2ece7"
+source = "git+https://github.com/noir-lang/noir?rev=c57152f91260ecdb9faad4efc20abb14b6d2ece7#c57152f91260ecdb9faad4efc20abb14b6d2ece7"
 dependencies = [
  "msgpack_tagged_derive",
  "rmp",
@@ -937,7 +937,7 @@ dependencies = [
 [[package]]
 name = "msgpack_tagged_derive"
 version = "1.0.0-beta.20"
-source = "git+https://github.com/noir-lang/noir?tag=v1.0.0-beta.22#c57152f91260ecdb9faad4efc20abb14b6d2ece7"
+source = "git+https://github.com/noir-lang/noir?rev=c57152f91260ecdb9faad4efc20abb14b6d2ece7#c57152f91260ecdb9faad4efc20abb14b6d2ece7"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -987,7 +987,7 @@ dependencies = [
 [[package]]
 name = "noirc_abi"
 version = "1.0.0-beta.22"
-source = "git+https://github.com/noir-lang/noir?tag=v1.0.0-beta.22#c57152f91260ecdb9faad4efc20abb14b6d2ece7"
+source = "git+https://github.com/noir-lang/noir?rev=c57152f91260ecdb9faad4efc20abb14b6d2ece7#c57152f91260ecdb9faad4efc20abb14b6d2ece7"
 dependencies = [
  "acvm",
  "iter-extended",
@@ -1004,7 +1004,7 @@ dependencies = [
 [[package]]
 name = "noirc_printable_type"
 version = "1.0.0-beta.22"
-source = "git+https://github.com/noir-lang/noir?tag=v1.0.0-beta.22#c57152f91260ecdb9faad4efc20abb14b6d2ece7"
+source = "git+https://github.com/noir-lang/noir?rev=c57152f91260ecdb9faad4efc20abb14b6d2ece7#c57152f91260ecdb9faad4efc20abb14b6d2ece7"
 dependencies = [
  "acvm",
  "iter-extended",

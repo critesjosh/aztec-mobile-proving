@@ -53,6 +53,23 @@ class ProverModule(private val ctx: ReactApplicationContext) : ReactContextBaseJ
         }.start()
     }
 
+    /**
+     * Best-effort cancel of an in-flight prove. Runs on its own thread (the
+     * prove thread is busy in native code); the native call only sets an atomic
+     * flag, so it returns immediately. Cancel lands at the next circuit boundary
+     * (the final Chonk prove step still completes) — honest limitation.
+     */
+    @ReactMethod
+    fun requestAbort(promise: Promise) {
+        Thread {
+            try {
+                promise.resolve(NativeProver.requestAbort())
+            } catch (e: Throwable) {
+                promise.reject("requestAbort", e.message, e)
+            }
+        }.start()
+    }
+
     private fun readAsset(path: String): ByteArray {
         ctx.assets.open(path).use { return it.readBytes() }
     }

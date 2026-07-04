@@ -33,7 +33,7 @@ export function OnboardingScreen({s, c}: ScreenProps) {
         <Input value={alias} onChangeText={setAlias} placeholder="my-account" />
         {s.flowError ? <ErrorBanner message={s.flowError} /> : null}
         {s.busy ? (
-          <Busy label={s.busy} />
+          <Busy label={s.busy} stage={s.busyStage} onCancel={() => c.cancelCurrent()} />
         ) : (
           <Button
             title="Create account"
@@ -110,7 +110,7 @@ export function HomeScreen({s, c}: ScreenProps) {
         )}
         <View style={{height: spacing.m}} />
         {s.busy ? (
-          <Busy label={s.busy} />
+          <Busy label={s.busy} stage={s.busyStage} onCancel={() => c.cancelCurrent()} />
         ) : (
           <TokenActions s={s} c={c} />
         )}
@@ -190,7 +190,7 @@ export function SendScreen({s, c}: ScreenProps) {
         <Label>Amount</Label>
         <Input value={amount} onChangeText={setAmount} keyboardType="numeric" />
         {s.busy ? (
-          <Busy label={s.busy} />
+          <Busy label={s.busy} stage={s.busyStage} onCancel={() => c.cancelCurrent()} />
         ) : (
           <Button
             title="Send"
@@ -246,7 +246,7 @@ export function AmmScreen({s, c}: ScreenProps) {
               </Label>
             ) : null}
             {s.busy ? (
-              <Busy label={s.busy} />
+              <Busy label={s.busy} stage={s.busyStage} onCancel={() => c.cancelCurrent()} />
             ) : (
               <Button
                 title={
@@ -268,7 +268,7 @@ export function AmmScreen({s, c}: ScreenProps) {
             <Input value={amount0} onChangeText={setAmount0} keyboardType="numeric" />
             <Input value={amount1} onChangeText={setAmount1} keyboardType="numeric" />
             {s.busy ? (
-              <Busy label={s.busy} />
+              <Busy label={s.busy} stage={s.busyStage} onCancel={() => c.cancelCurrent()} />
             ) : (
               <Button title="Add liquidity" onPress={() => void c.ammAddLiquidity(amount0, amount1)} />
             )}

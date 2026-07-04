@@ -21,6 +21,13 @@ object NativeProver {
     /** ClientIVC: prove + verify a full Aztec tx from an ivc-inputs.msgpack buffer. */
     external fun chonkProve(ivcInputs: ByteArray): String
 
+    /**
+     * Cooperatively cancel an in-flight [chonkProve] at its next circuit
+     * boundary. Best-effort (the final prove step still runs to completion).
+     * Safe to call from another thread during a prove.
+     */
+    external fun requestAbort(): String
+
     /** bbapi smoke test. */
     external fun blake2s(data: ByteArray): String
 }

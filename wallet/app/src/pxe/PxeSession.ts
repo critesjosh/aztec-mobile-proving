@@ -11,6 +11,25 @@ import type {WebViewMessageEvent} from 'react-native-webview';
 import {RPC_TIMEOUT_MS} from '../config';
 import {MemoryInfo, Prover} from '../native/modules';
 
+/** Structured progress stage (from the WebView flow's `stage()` emit). */
+export interface ProgressStage {
+  label: string;
+  index: number;
+  total: number;
+}
+
+/** Raised when a flow is cancelled via {@link PxeSession.abort}. */
+export class AbortError extends Error {
+  constructor() {
+    super('cancelled');
+    this.name = 'AbortError';
+  }
+}
+
+export function isAbortError(e: unknown): boolean {
+  return e instanceof Error && e.name === 'AbortError';
+}
+
 export interface ProveMetrics {
   verified: boolean;
   proveMs: number;
@@ -23,7 +42,13 @@ export interface ProveMetrics {
 export type SessionEvent =
   | {kind: 'ready'}
   | {kind: 'log'; message: string}
-  | {kind: 'progress'; id: number; phase: string; data?: Record<string, unknown>}
+  | {
+      kind: 'progress';
+      id: number;
+      phase: string;
+      data?: Record<string, unknown>;
+      stage?: ProgressStage;
+    }
   | {kind: 'prove-metrics'; metrics: ProveMetrics}
   | {kind: 'crashed'; reason: string};
 
@@ -61,12 +86,25 @@ export class PxeSession {
     }
   }
 
-  /** Call an RPC method in the WebView. Rejects on timeout/crash/error. */
-  call<T>(method: string, params: object = {}, timeoutMs: number = RPC_TIMEOUT_MS): Promise<T> {
+  /**
+   * Call an RPC method in the WebView. Rejects on timeout/crash/error, or with
+   * {@link AbortError} if the call is cancelled via {@link abort}.
+   *
+   * `onId` receives the call id synchronously before the request is posted, so
+   * a caller (e.g. a flow) can record the id to cancel later.
+   */
+  call<T>(
+    method: string,
+    params: object = {},
+    timeoutMs: number = RPC_TIMEOUT_MS,
+    onId?: (id: number) => void,
+    cancellable = false,
+  ): Promise<T> {
     if (this.crashed) {
       return Promise.reject(new Error('PXE session crashed; restart required'));
     }
     const id = ++this.seq;
+    onId?.(id);
     return new Promise<T>((resolve, reject) => {
       const timer = setTimeout(() => {
         if (this.pending.delete(id)) {
@@ -79,8 +117,27 @@ export class PxeSession {
         reject,
         timer,
       });
-      this.post({type: 'rpc', id, method, params});
+      // `cancellable` tells the WebView to arm abort wiring for this call only;
+      // background calls (poller/refresh) leave it false so they never disturb
+      // the in-flight flow's abort signal.
+      this.post({type: 'rpc', id, method, params, cancellable});
     });
+  }
+
+  /**
+   * Cancel an in-flight call by id. Posts an abort to the WebView (cancels the
+   * JS-phase work — sync, simulate, authwit generation — at the next boundary)
+   * AND asks the native prover to stop (best-effort; lands at the next circuit
+   * boundary, the final prove step still completes). The call's promise rejects
+   * with {@link AbortError} once the WebView reports the cancelled result.
+   */
+  abort(id: number) {
+    if (this.crashed || !this.webView) {
+      return;
+    }
+    this.post({type: 'abort', id});
+    // The native prove runs outside the WebView; ask it to stop too.
+    Prover.requestAbort?.().catch(() => {});
   }
 
   /** Wire this to the WebView's onMessage. */
@@ -115,7 +172,8 @@ export class PxeSession {
         break;
       case 'progress':
         if (typeof msg.id === 'number' && typeof msg.phase === 'string') {
-          this.emit({kind: 'progress', id: msg.id, phase: msg.phase, data: msg.data});
+          const stage = parseStage(msg.data);
+          this.emit({kind: 'progress', id: msg.id, phase: msg.phase, data: msg.data, stage});
         }
         break;
       case 'rpcResult': {
@@ -130,6 +188,8 @@ export class PxeSession {
         clearTimeout(call.timer);
         if (msg.ok === true) {
           call.resolve(msg.result);
+        } else if (msg.aborted === true) {
+          call.reject(new AbortError());
         } else {
           call.reject(new Error(typeof msg.error === 'string' ? msg.error : `${call.method} failed`));
         }
@@ -214,4 +274,16 @@ export class PxeSession {
     }
     wv.injectJavaScript(`window.__aztecOnHostMessage(${JSON.stringify(msg)}); true;`);
   }
+}
+
+/** Extract a well-formed {label,index,total} stage from a progress data blob. */
+function parseStage(data: unknown): ProgressStage | undefined {
+  if (!data || typeof data !== 'object') {
+    return undefined;
+  }
+  const d = data as Record<string, unknown>;
+  if (typeof d.label === 'string' && typeof d.index === 'number' && typeof d.total === 'number') {
+    return {label: d.label, index: d.index, total: d.total};
+  }
+  return undefined;
 }

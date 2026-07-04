@@ -120,7 +120,13 @@ pub extern "system" fn Java_foundation_aztec_noirprover_NativeProver_chonkProve(
         Err(e) => return throw_and_default(&mut env, &format!("bad ivc inputs array: {e}")),
     };
     run_json(&mut env, move || {
+        // Acquire the prover mutex FIRST, then clear any stale abort. Clearing
+        // before the lock would let a second prove (blocked here on the mutex)
+        // wipe an abort meant for the first, still-running prove. Once we hold
+        // the lock the previous prove has fully returned, so clearing here only
+        // discards a request that can no longer apply to anyone but us.
         let mut guard = PROVER.lock().unwrap();
+        noir_prover::clear_abort();
         let prover = guard.as_mut().ok_or("initSrs must be called first")?;
         let steps = noir_prover::parse_ivc_inputs(&inputs).map_err(|e| e.to_string())?;
         let step_names: Vec<String> = steps.iter().map(|s| s.function_name.clone()).collect();
@@ -146,6 +152,23 @@ pub extern "system" fn Java_foundation_aztec_noirprover_NativeProver_chonkProve(
             "proof_fields": out.proof_fields.iter().map(|f| hex(f)).collect::<Vec<_>>(),
             "vk": hex(&out.vk),
         }))
+    })
+}
+
+/// Request that an in-flight `chonkProve` stop at its next circuit-accumulation
+/// boundary. Safe to call from another thread while a prove holds the prover
+/// mutex (this sets an independent atomic flag; it does not touch the prover).
+/// Best-effort: see crates/noir-prover/src/abort.rs for the honest scope — a
+/// single barretenberg call, including the final Chonk prove, always runs to
+/// completion, so cancel lands at the next boundary, not instantly.
+#[no_mangle]
+pub extern "system" fn Java_foundation_aztec_noirprover_NativeProver_requestAbort(
+    mut env: JNIEnv,
+    _class: JClass,
+) -> jstring {
+    run_json(&mut env, move || {
+        noir_prover::request_abort();
+        Ok(json!({ "ok": true }))
     })
 }
 

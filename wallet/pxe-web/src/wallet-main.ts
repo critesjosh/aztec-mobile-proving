@@ -61,20 +61,88 @@ const log = (msg: string) => toHost({ type: 'log', msg });
 const provePending = new Map<number, (r: any) => void>();
 let proveSeq = 0;
 const PROVE_TIMEOUT_MS = 15 * 60 * 1000;
+
+// ---------------------------------------------------------------------------
+// Cooperative abort
+// ---------------------------------------------------------------------------
+// A flow can be cancelled at phase boundaries. The RN host posts
+// { type:'abort', id } for the in-flight RPC; the dispatcher fires that call's
+// AbortController. `currentAbortSignal` is the signal of the single in-flight
+// flow (the wallet runs one flow at a time behind a busy lock on the RN side),
+// so free helpers and the native prove bridge can observe it without threading
+// a signal through every handler.
+//
+// Honest scope: abort is COOPERATIVE and lands at the next phase boundary. The
+// JS phases (sync, simulate, authwit generation) check `checkAbort()` between
+// steps. The native ClientIVC prove is a single long call; the RN host also
+// calls the native prover's best-effort abort, which takes effect at the next
+// circuit-accumulation boundary — the final Chonk prove step itself is not
+// interruptible (see crates/noir-prover, ProverModule.requestAbort).
+let currentAbortSignal: AbortSignal | undefined;
+
+function makeAbortError(): Error {
+  const e = new Error('cancelled');
+  e.name = 'AbortError';
+  return e;
+}
+
+/** Throw AbortError if the in-flight flow has been cancelled. */
+function checkAbort(): void {
+  if (currentAbortSignal?.aborted) {
+    throw makeAbortError();
+  }
+}
+
 const proveOverBridge: ProveOverBridge = (ivc: Uint8Array) =>
   new Promise((resolve, reject) => {
+    // Cancelled before we even dispatch: don't start a native prove.
+    if (currentAbortSignal?.aborted) {
+      reject(makeAbortError());
+      return;
+    }
     const id = ++proveSeq;
+    const signal = currentAbortSignal;
     const timer = setTimeout(() => {
       if (provePending.delete(id)) {
+        cleanup();
         reject(new Error(`native prove #${id} timed out after ${PROVE_TIMEOUT_MS} ms`));
       }
     }, PROVE_TIMEOUT_MS);
-    provePending.set(id, r => {
+    const onAbort = () => {
+      // Reject promptly so the flow unwinds; a late proveResult for this id is
+      // ignored (id no longer pending). The RN host separately asks the native
+      // prover to stop, freeing its memory at the next step boundary.
+      if (provePending.delete(id)) {
+        cleanup();
+        reject(makeAbortError());
+      }
+    };
+    const cleanup = () => {
       clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
+    };
+    signal?.addEventListener('abort', onAbort);
+    provePending.set(id, r => {
+      cleanup();
       resolve(r);
     });
     toHost({ type: 'proveRequest', id, ivcInputsB64: bytesToB64(ivc) });
   });
+
+// ---------------------------------------------------------------------------
+// Staged progress
+// ---------------------------------------------------------------------------
+type Emit = (phase: string, data?: Record<string, unknown>) => void;
+
+/**
+ * Emit a structured progress stage on top of the coarse `phase` string. `data`
+ * carries `{ label, index, total }` so the RN UI can render an ordered stage
+ * indicator instead of a raw phase name. The set of stages per flow is fixed
+ * and ordered so the UI can show N/total.
+ */
+function stage(emit: Emit, phase: string, label: string, index: number, total: number): void {
+  emit(phase, { label, index, total });
+}
 
 // ---------------------------------------------------------------------------
 // Session state
@@ -98,11 +166,27 @@ function requireSession(): Session {
 
 const fee = () => ({ paymentMethod: requireSession().paymentMethod });
 
+/**
+ * Reach the wallet's underlying PXE to drive a controlled sync. `PXE.sync()` and
+ * `getSyncedBlockHeader()` are public API; the EmbeddedWallet composes the PXE
+ * and does not re-expose it, so we read it via composition. Guarded so a future
+ * refactor that hides the field degrades gracefully rather than throwing.
+ */
+interface SyncablePxe {
+  sync(): Promise<void>;
+  getSyncedBlockHeader(): Promise<{ globalVariables?: { blockNumber?: number | bigint } }>;
+}
+function pxeOf(wallet: EmbeddedWallet): SyncablePxe | undefined {
+  const pxe = (wallet as unknown as { pxe?: Partial<SyncablePxe> }).pxe;
+  if (pxe && typeof pxe.sync === 'function' && typeof pxe.getSyncedBlockHeader === 'function') {
+    return pxe as SyncablePxe;
+  }
+  return undefined;
+}
+
 // ---------------------------------------------------------------------------
 // RPC handlers
 // ---------------------------------------------------------------------------
-
-type Emit = (phase: string, data?: Record<string, unknown>) => void;
 
 const handlers: Record<string, (params: any, emit: Emit) => Promise<unknown>> = {
   /**
@@ -111,7 +195,10 @@ const handlers: Record<string, (params: any, emit: Emit) => Promise<unknown>> = 
    * account secrets are never persisted by the WebView (they live sealed on
    * the RN side).
    */
-  async boot(params: { nodeUrl: string; sponsoredFpc: string; persistent: boolean }, emit) {
+  async boot(
+    params: { nodeUrl: string; sponsoredFpc: string; persistent: boolean; encrypted?: boolean; storeKey?: string },
+    emit,
+  ) {
     if (session) {
       throw new Error('already booted');
     }
@@ -120,16 +207,78 @@ const handlers: Record<string, (params: any, emit: Emit) => Promise<unknown>> = 
     const delegate = new BBLazyPrivateKernelProver(simulator, {});
     const nativeProver = makeNativeChonkProver(delegate, proveOverBridge);
     emit('wasm:acvm-init');
-    const wallet = await EmbeddedWallet.create(params.nodeUrl, {
-      ephemeral: !params.persistent,
-      // ALWAYS a genuinely in-memory wallet DB: EmbeddedWallet's WalletDB persists
-      // account secret keys, and even the kv-store "ephemeral" IndexedDB
-      // store writes to disk (random-named DB). See mem-store.ts.
-      walletDb: { store: openMemoryStore() },
-      pxe: { proverEnabled: true, proverOrOptions: nativeProver, simulator },
-    });
+
+    // We own the PXE sync cadence. The EmbeddedWallet already disables autoSync
+    // internally (it drives exactly one pxe.sync() per public op — sendTx /
+    // simulateTx / executeUtility — so a build+send shares a single sync),
+    // which is the "controlled sync" technique. We set it explicitly so the
+    // intent is visible and a future default change can't silently turn
+    // per-inner-call autosync back on, and we expose a standalone `sync` RPC
+    // (below) that the RN poller/refresh drives on a controlled cadence.
+    const pxeBase = {
+      proverEnabled: true,
+      proverOrOptions: nativeProver,
+      simulator,
+      autoSync: false,
+      syncChainTip: 'proposed' as const,
+    };
+
+    // Store selection:
+    //  - encrypted (preferred, closes the plaintext-viewing-key gap): both the
+    //    PXE data store AND the wallet DB are sqlite-opfs stores encrypted with
+    //    a 32-byte key held by the Android Keystore (passed in as `storeKey`).
+    //    Gated on OPFS being present AND the real encrypted open succeeding;
+    //    any failure falls back safely and is logged (adopt only if it works).
+    //  - fallback (proven default): persistent IndexedDB PXE store + a
+    //    genuinely in-memory wallet DB (EmbeddedWallet's WalletDB would persist
+    //    account secret keys plaintext, and even the kv-store "ephemeral"
+    //    IndexedDB store writes to disk — see mem-store.ts).
+    let walletOpts: Parameters<typeof EmbeddedWallet.create>[1];
+    let storeEncrypted = false;
+    if (params.encrypted && params.storeKey) {
+      const key = b64ToBytes(params.storeKey);
+      const opfs = await probeOpfs();
+      if (key.length !== 32) {
+        log(`encrypted store requested but store key is ${key.length} bytes (need 32); using fallback store`);
+      } else if (!opfs.dirOpens) {
+        log('encrypted store requested but OPFS unavailable; using fallback store');
+      } else {
+        try {
+          const { openEncryptedEmbeddedStores } = await import('@aztec/wallets/embedded/store-encryption');
+          const { createLogger } = await import('@aztec/foundation/log');
+          // getEncryptionKey must return a FRESH buffer per call: the key is
+          // transferred to the store's worker and detaches. Re-decode each time.
+          const { pxeStore, walletStore } = await openEncryptedEmbeddedStores(
+            {
+              pxe: { name: 'wallet_pxe', poolDirectory: 'wallet-pxe' },
+              wallet: { name: 'wallet_db', poolDirectory: 'wallet-db' },
+            },
+            async () => b64ToBytes(params.storeKey!),
+            createLogger('wallet:store:encrypted'),
+          );
+          walletOpts = {
+            ephemeral: false,
+            pxe: { ...pxeBase, store: pxeStore },
+            walletDb: { store: walletStore },
+          };
+          storeEncrypted = true;
+          emit('store:encrypted');
+        } catch (e: any) {
+          log(`encrypted store open failed, falling back to persistent IndexedDB: ${String(e?.message ?? e)}`);
+        }
+      }
+    }
+    if (!walletOpts) {
+      walletOpts = {
+        ephemeral: !params.persistent,
+        walletDb: { store: openMemoryStore() },
+        pxe: pxeBase,
+      };
+    }
+
+    const wallet = await EmbeddedWallet.create(params.nodeUrl, walletOpts);
     const node = createAztecNodeClient(params.nodeUrl);
-    emit('pxe:created');
+    emit('pxe:created', { storeEncrypted });
 
     const { SponsoredFPCContractArtifact } = await import('@aztec/noir-contracts.js/SponsoredFPC');
     const fpcInstance = await getContractInstanceFromInstantiationParams(SponsoredFPCContractArtifact, {
@@ -151,6 +300,7 @@ const handlers: Record<string, (params: any, emit: Emit) => Promise<unknown>> = 
       l1ChainId: info.l1ChainId,
       rollupVersion: info.rollupVersion,
       nodeVersion: info.nodeVersion,
+      storeEncrypted,
     };
   },
 
@@ -175,6 +325,34 @@ const handlers: Record<string, (params: any, emit: Emit) => Promise<unknown>> = 
   /** Current chain tip, for status display + poller scheduling. */
   async getBlockNumber() {
     return await requireSession().node.getBlockNumber();
+  },
+
+  /**
+   * Drive one controlled PXE sync (note discovery + state). The RN poller /
+   * balance refresh calls this once per cycle so subsequent reads run against
+   * a fresh anchor, instead of relying on each read to trigger its own sync.
+   * No-ops (returning synced: false) if the PXE isn't reachable for a
+   * standalone sync — reads still self-sync in that case.
+   */
+  async sync() {
+    checkAbort();
+    const pxe = pxeOf(requireSession().wallet);
+    if (!pxe) {
+      return { synced: false as const };
+    }
+    await pxe.sync();
+    return { synced: true as const };
+  },
+
+  /** Block number the PXE has synced its private state up to (status display). */
+  async getSyncedBlock() {
+    const pxe = pxeOf(requireSession().wallet);
+    if (!pxe) {
+      return { blockNumber: undefined };
+    }
+    const header = await pxe.getSyncedBlockHeader();
+    const bn = header?.globalVariables?.blockNumber;
+    return { blockNumber: bn !== undefined ? Number(bn) : undefined };
   },
 
   /**
@@ -235,8 +413,10 @@ const handlers: Record<string, (params: any, emit: Emit) => Promise<unknown>> = 
     if (!account) {
       throw new Error(`unknown account ${params.address}; createAccount/restoreAccounts first`);
     }
+    checkAbort();
     const deployMethod = await account.getDeployMethod();
-    emit('deploy:proving');
+    checkAbort();
+    stage(emit, 'deploy:proving', 'Proving account deployment on device', 1, 1);
     const { txHash } = await deployMethod.send({
       from: NO_FROM,
       skipClassPublication: false,
@@ -254,7 +434,8 @@ const handlers: Record<string, (params: any, emit: Emit) => Promise<unknown>> = 
     const { TokenContract } = await import('@aztec/noir-contracts.js/Token');
     const from = AztecAddress.fromStringUnsafe(params.from);
     const deploy = TokenContract.deploy(s.wallet, from, params.name, params.symbol, params.decimals);
-    emit('deploy-token:proving');
+    checkAbort();
+    stage(emit, 'deploy-token:proving', `Proving ${params.symbol} deployment on device`, 1, 1);
     // send() locks the deployer; getInstance() is only valid afterwards.
     const { txHash } = await deploy.send({ from, fee: fee(), wait: NO_WAIT });
     const instance = await deploy.getInstance();
@@ -267,7 +448,8 @@ const handlers: Record<string, (params: any, emit: Emit) => Promise<unknown>> = 
     const token = await tokenAt(params.token);
     const from = AztecAddress.fromStringUnsafe(params.from);
     const to = AztecAddress.fromStringUnsafe(params.to);
-    emit('mint:proving');
+    checkAbort();
+    stage(emit, 'mint:proving', 'Proving mint on device', 1, 1);
     const { txHash } = await token.methods
       .mint_to_private(to, BigInt(params.amount))
       .send({ from, fee: fee(), wait: NO_WAIT });
@@ -276,10 +458,12 @@ const handlers: Record<string, (params: any, emit: Emit) => Promise<unknown>> = 
 
   /** Private transfer of `amount` of `token` from `from` to `to`. */
   async transfer(params: { token: string; from: string; to: string; amount: string }, emit) {
+    checkAbort();
     const token = await tokenAt(params.token);
     const from = AztecAddress.fromStringUnsafe(params.from);
     const to = AztecAddress.fromStringUnsafe(params.to);
-    emit('transfer:proving');
+    checkAbort();
+    stage(emit, 'transfer:proving', 'Proving transfer on device', 1, 1);
     const { txHash } = await token.methods
       .transfer(to, BigInt(params.amount))
       .send({ from, fee: fee(), wait: NO_WAIT });
@@ -334,12 +518,18 @@ const handlers: Record<string, (params: any, emit: Emit) => Promise<unknown>> = 
     const { TokenContract } = await import('@aztec/noir-contracts.js/Token');
     const { AMMContract } = await import('@aztec/noir-contracts.js/AMM');
 
-    emit('amm:liquidity-token:proving');
+    checkAbort();
+    stage(emit, 'amm:liquidity-token:proving', 'Proving liquidity-token deployment', 1, 2);
     const lpDeploy = TokenContract.deploy(s.wallet, from, 'Liquidity', 'LPT', 18);
     const lp = await lpDeploy.send({ from, fee: fee(), wait: NO_WAIT });
     const lpInstance = await lpDeploy.getInstance();
 
-    emit('amm:contract:proving', { liquidityToken: lpInstance.address.toString() });
+    // NO checkAbort() here: the LP deploy above is already submitted on-chain.
+    // Cancelling between the two sends would throw before we return the tx
+    // hashes, orphaning a durable tx the RN side never recorded. Once the first
+    // send lands we always finish and return both hashes; cancel only lands at
+    // the START of this handler (before anything is submitted).
+    stage(emit, 'amm:contract:proving', 'Proving AMM deployment', 2, 2);
     const ammDeploy = AMMContract.deploy(s.wallet, token0, token1, lpInstance.address);
     const amm = await ammDeploy.send({ from, fee: fee(), wait: NO_WAIT });
     const ammInstance = await ammDeploy.getInstance();
@@ -359,7 +549,8 @@ const handlers: Record<string, (params: any, emit: Emit) => Promise<unknown>> = 
     const token = await tokenAt(params.liquidityToken);
     const from = AztecAddress.fromStringUnsafe(params.from);
     const amm = AztecAddress.fromStringUnsafe(params.amm);
-    emit('amm:set-minter:proving');
+    checkAbort();
+    stage(emit, 'amm:set-minter:proving', 'Proving set-minter on device', 1, 1);
     const { txHash } = await token.methods
       .set_minter(amm, true)
       .send({ from, fee: fee(), wait: NO_WAIT });
@@ -395,7 +586,8 @@ const handlers: Record<string, (params: any, emit: Emit) => Promise<unknown>> = 
     const amount0Min = BigInt(params.amount0Min ?? params.amount0);
     const amount1Min = BigInt(params.amount1Min ?? params.amount1);
 
-    emit('amm:authwits');
+    checkAbort();
+    stage(emit, 'amm:authwits', 'Authorizing token 0 transfer', 1, 3);
     const nonce = Fr.random();
     // The {caller, action} intent (ContractFunctionInteractionCallIntent) is
     // accepted at runtime by computeAuthWitMessageHash; createAuthWit's
@@ -421,9 +613,12 @@ const handlers: Record<string, (params: any, emit: Emit) => Promise<unknown>> = 
     };
     type CreateAuthWitIntent = Parameters<typeof s.wallet.createAuthWit>[1];
     const token0Authwit = await s.wallet.createAuthWit(from, intent0 as unknown as CreateAuthWitIntent);
+    checkAbort();
+    stage(emit, 'amm:authwits', 'Authorizing token 1 transfer', 2, 3);
     const token1Authwit = await s.wallet.createAuthWit(from, intent1 as unknown as CreateAuthWitIntent);
 
-    emit('amm:add-liquidity:proving');
+    checkAbort();
+    stage(emit, 'amm:add-liquidity:proving', 'Proving add-liquidity on device (14 circuits)', 3, 3);
     const { txHash } = await amm.methods
       .add_liquidity(amount0, amount1, amount0Min, amount1Min, nonce)
       .with({ authWitnesses: [token0Authwit, token1Authwit] })
@@ -435,6 +630,9 @@ const handlers: Record<string, (params: any, emit: Emit) => Promise<unknown>> = 
 // ---------------------------------------------------------------------------
 // Dispatcher
 // ---------------------------------------------------------------------------
+
+/** AbortControllers for in-flight RPCs, keyed by call id. */
+const abortRegistry = new Map<number, AbortController>();
 
 window.__aztecOnHostMessage = async (raw: unknown) => {
   const msg = raw as any;
@@ -452,6 +650,13 @@ window.__aztecOnHostMessage = async (raw: unknown) => {
     }
     return;
   }
+  if (msg.type === 'abort') {
+    // Cancel the in-flight flow at its next phase boundary.
+    if (typeof msg.id === 'number') {
+      abortRegistry.get(msg.id)?.abort();
+    }
+    return;
+  }
   if (msg.type !== 'rpc') {
     return;
   }
@@ -464,19 +669,47 @@ window.__aztecOnHostMessage = async (raw: unknown) => {
     toHost({ type: 'rpcResult', id, ok: false, error: `unknown method ${method}` });
     return;
   }
+  // Only user-cancellable flow calls (RN `flowCall`) get abort wiring. Background
+  // RPCs (poller getTxReceipt, sync, balance reads) run with `cancellable`
+  // false, so they NEVER touch `currentAbortSignal`. Combined with the RN busy
+  // lock (one flow at a time), `currentAbortSignal` therefore has a single owner
+  // — the in-flight flow — for its whole lifetime, and interleaved background
+  // calls cannot clobber the signal that `checkAbort()`/`proveOverBridge` read.
+  const cancellable = msg.cancellable === true;
+  let controller: AbortController | undefined;
+  if (cancellable) {
+    controller = new AbortController();
+    abortRegistry.set(id, controller);
+    currentAbortSignal = controller.signal;
+  }
   try {
     const emit: Emit = (phase, data) => toHost({ type: 'progress', id, phase, data });
     const result = await handler(params ?? {}, emit);
     toHost({ type: 'rpcResult', id, ok: true, result });
   } catch (e: any) {
-    // Errors flow into the RN log panel + logcat. Methods whose params carry
-    // key material get REDACTED errors: no stack, and any long hex payload
-    // stripped (e.g. Fr.fromString echoes its rejected input — a corrupted
-    // vault value must not end up in logs).
-    const error = KEY_BEARING_METHODS.has(method)
-      ? redactHex(String(e?.message ?? e).split('\n')[0])
-      : (e?.stack ?? String(e));
-    toHost({ type: 'rpcResult', id, ok: false, error });
+    if (cancellable && (e?.name === 'AbortError' || controller!.signal.aborted)) {
+      // Cancellation is a distinct outcome, not a failure. RN clears the flow
+      // without surfacing it as an error; nothing durable was submitted (abort
+      // only lands before node.sendTx — the tx build/prove is what gets torn
+      // down).
+      toHost({ type: 'rpcResult', id, ok: false, aborted: true, error: 'cancelled' });
+    } else {
+      // Errors flow into the RN log panel + logcat. Methods whose params carry
+      // key material get REDACTED errors: no stack, and any long hex payload
+      // stripped (e.g. Fr.fromString echoes its rejected input — a corrupted
+      // vault value must not end up in logs).
+      const error = KEY_BEARING_METHODS.has(method)
+        ? redactHex(String(e?.message ?? e).split('\n')[0])
+        : (e?.stack ?? String(e));
+      toHost({ type: 'rpcResult', id, ok: false, error });
+    }
+  } finally {
+    if (cancellable && controller) {
+      abortRegistry.delete(id);
+      if (currentAbortSignal === controller.signal) {
+        currentAbortSignal = undefined;
+      }
+    }
   }
 };
 
@@ -524,16 +757,47 @@ async function probeIndexedDb(): Promise<{ ok: boolean; hadMarker: boolean; mark
   }
 }
 
-async function probeOpfs(): Promise<{ getDirectory: boolean; dirOpens: boolean; error?: string }> {
+interface OpfsProbe {
+  getDirectory: boolean;
+  dirOpens: boolean;
+  /**
+   * Whether a SyncAccessHandle round trip works FROM THE MAIN THREAD. Diagnostic
+   * only — many engines only allow SAH inside a Worker, and the sqlite-opfs
+   * store creates its own Worker, so a false here does NOT mean the encrypted
+   * store is unavailable. The real gate is `dirOpens` + attempting the actual
+   * encrypted store open (see boot()).
+   */
+  syncAccessHandle: boolean;
+  error?: string;
+}
+
+async function probeOpfs(): Promise<OpfsProbe> {
   const getDirectory = typeof navigator.storage?.getDirectory === 'function';
   if (!getDirectory) {
-    return { getDirectory, dirOpens: false };
+    return { getDirectory, dirOpens: false, syncAccessHandle: false };
   }
   try {
-    await navigator.storage.getDirectory();
-    return { getDirectory, dirOpens: true };
+    const root = await navigator.storage.getDirectory();
+    let syncAccessHandle = false;
+    try {
+      const fh: any = await root.getFileHandle('.wallet-opfs-probe', { create: true });
+      if (typeof fh.createSyncAccessHandle === 'function') {
+        const sah = await fh.createSyncAccessHandle();
+        const buf = new Uint8Array([1, 2, 3, 4]);
+        sah.write(buf, { at: 0 });
+        sah.flush();
+        const read = new Uint8Array(4);
+        sah.read(read, { at: 0 });
+        sah.close();
+        syncAccessHandle = read[0] === 1 && read[3] === 4;
+      }
+      await root.removeEntry('.wallet-opfs-probe').catch(() => {});
+    } catch {
+      // Main-thread SAH unsupported is expected on some engines; not fatal.
+    }
+    return { getDirectory, dirOpens: true, syncAccessHandle };
   } catch (e: any) {
-    return { getDirectory, dirOpens: false, error: String(e?.message ?? e) };
+    return { getDirectory, dirOpens: false, syncAccessHandle: false, error: String(e?.message ?? e) };
   }
 }
 
@@ -548,6 +812,16 @@ function bytesToB64(u8: Uint8Array): string {
 
 function hexToBuffer(hex: string): Buffer {
   return Buffer.from(hex.replace(/^0x/, ''), 'hex');
+}
+
+/** Decode base64 to a fresh Uint8Array (fresh each call — see getEncryptionKey). */
+function b64ToBytes(b64: string): Uint8Array {
+  const bin = atob(b64);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) {
+    out[i] = bin.charCodeAt(i);
+  }
+  return out;
 }
 
 toHost({ type: 'ready' });

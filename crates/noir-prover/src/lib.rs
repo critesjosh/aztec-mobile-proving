@@ -8,6 +8,7 @@
 //! (noir acvm crates) + standalone UltraHonk proving/verification of a compiled
 //! Noir program.
 
+pub mod abort;
 pub mod chonk;
 pub mod error;
 pub mod prover;
@@ -18,6 +19,7 @@ pub mod ultrahonk;
 #[cfg(feature = "ultrahonk")]
 pub mod witgen;
 
+pub use abort::{clear_abort, is_aborted, request_abort};
 pub use chonk::{flatten_proof_fields, parse_ivc_inputs, ChonkFlowOutput, ChonkStep};
 pub use error::{ProverError, Result};
 pub use prover::NoirProver;

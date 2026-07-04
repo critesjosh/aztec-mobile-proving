@@ -14,6 +14,8 @@ pub enum ProverError {
     Srs(String),
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
+    #[error("proving cancelled")]
+    Aborted,
 }
 
 pub type Result<T> = std::result::Result<T, ProverError>;

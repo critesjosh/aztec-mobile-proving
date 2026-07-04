@@ -96,6 +96,34 @@ added ~10–60 s per tx on top (network, not device). PXE boot ~5 s; SRS init
 ~0.3 s; account restore after the first registration ~0.1 s (first
 registration ~25 s, dominated by account-class computation).
 
+### Benchmark methodology (p50/p90, drop-cold, thermal-stratified)
+
+The table above reports representative single runs on the emulator. Single
+numbers are misleading on real phones, so the aggregation methodology used for
+multi-run device benchmarks (implemented in
+`app/src/bench/benchStats.ts`, unit-tested in `app/__tests__/benchStats.test.ts`)
+is:
+
+- **Distributions, not means.** Report **p50 and p90 per phase**. Proving time
+  is right-skewed; the median plus the p90 tail (what a user feels on a bad run)
+  are the honest summary, and the mean is not.
+- **Drop-cold.** The first run of each flow pays cold-start costs (JIT/code
+  warmup, SRS and page caches, class loading) a steady-state user does not, so
+  the first sample per flow is excluded from the percentiles and reported
+  separately as the cold number.
+- **Thermal stratification.** Samples taken while the OS reports a `serious` or
+  `critical` thermal state are excluded from the headline percentiles and
+  counted separately — a throttled device runs several times slower, and mixing
+  those runs into the nominal p50 would misrepresent both regimes.
+
+Status: the aggregator and its tests run today over the prove metrics the app
+already collects (`prove`, `wall` phases). Full real-device reports additionally
+need per-phase timings threaded out of the WebView flow (sync / simulate /
+witgen / verify) and the OS thermal state read from a native module
+(`PowerManager.getCurrentThermalStatus` on Android). Those are the remaining
+real-device wiring; all numbers here remain labelled emulator numbers until
+measured on arm64 hardware.
+
 ## Memory (measured, x86_64 emulator — arm64 hardware unmeasured)
 
 Memory is the known risk (see PLAN.md). Instrumentation: native prover
@@ -158,17 +186,60 @@ same RPC dispatcher in headless Chromium.
   and errors from key-bearing RPC methods are redacted (no stacks, long hex
   runs stripped) before they can reach the log panel/logcat. No
   biometric/user-auth gating yet (deferred).
-- The persistent PXE IndexedDB store contains viewing/nullifier key material
-  derived from the account secret — privacy-sensitive (note decryption) but
-  not spend-authorizing. Protected by the app sandbox only. Encrypted
-  sqlite-opfs stores are a documented stretch (PLAN.md) — OPFS probed
-  available in this WebView.
+- The persistent PXE data store contains viewing/nullifier key material derived
+  from the account secret — privacy-sensitive (note decryption) but not
+  spend-authorizing. When OPFS is available the wallet opens it as an ENCRYPTED
+  sqlite-opfs store (both the PXE data store and the wallet DB) under a 32-byte
+  key generated with `SecureRandom` and sealed by the Android Keystore, so this
+  material is encrypted at rest. If OPFS or the encrypted open is unavailable it
+  falls back to the persistent IndexedDB PXE store (app-sandbox protected) plus
+  a genuinely in-memory wallet DB, logging which path was taken. Status: the
+  encrypted path is runtime-gated and verified to typecheck + bundle; an
+  end-to-end encrypted-store round trip on a real OPFS-capable device WebView is
+  not yet measured (device E2E pending — no hardware this session).
 - The loopback server serves only the static public PXE bundle; RPC and key
   material never transit HTTP. Other apps can fetch the bundle (public code).
   Fixed port; bind failure is a hard error, never a silent port change.
 - WebView hardening: origin-pinned navigation, no file access, no mixed
   content, content debugging off in release, message shape validation on both
   sides of the bridge.
+
+## Recent hardening
+
+Improvements informed by reviewing production Aztec mobile wallets, implemented
+with public `@aztec` APIs and this repo's own native modules:
+
+- **Exact-commit dependency pins.** The noir git deps are pinned by exact commit
+  (not by a moving release tag) to prevent silent ACIR/witness serialization
+  drift between the on-device ACVM and the artifact producer. Rationale +
+  bump procedure in [../docs/dependency-pinning.md](../docs/dependency-pinning.md).
+- **Cooperative cancel + staged progress.** Flows emit ordered stages (e.g.
+  "Proving add-liquidity on device (14 circuits) 3/3") and are cancellable from
+  the UI. Cancel tears down the JS-phase work (sync / simulate / authwit
+  generation) at the next boundary and asks the native prover to stop
+  (best-effort). Honest limit: a single barretenberg call, including the final
+  Chonk prove step, always runs to completion, so native cancel lands at the
+  next circuit-accumulation boundary — heavy multi-circuit flows stop early and
+  free memory; a mid-final-prove cancel takes effect when that step returns.
+- **Controlled PXE sync cadence.** The PXE runs with `autoSync` off; the wallet
+  drives one explicit `sync()` per poll cycle / balance refresh instead of
+  relying on each read to trigger its own. (The v5 EmbeddedWallet already runs
+  autoSync off and syncs once per send/simulate/utility op; we make the intent
+  explicit and add a standalone controlled sync for the poller.)
+- **Thermal-stratified benchmark methodology.** p50/p90 per phase, first-run
+  (cold) samples dropped, throttled (`serious`/`critical` thermal) samples
+  excluded from the headline percentiles. Pure aggregator + tests in
+  `app/src/bench/benchStats.ts`; see the Benchmark methodology section above.
+- **Encrypted persistent store.** See the threat model — the PXE data store and
+  wallet DB are opened as encrypted sqlite-opfs stores under a Keystore-sealed
+  key when OPFS is available, with a safe fallback.
+
+Verification status this session: the TypeScript/bridge layers (staged
+progress, cancel plumbing, controlled sync, bench aggregator) are unit-tested,
+typechecked, and (for the WebView bundle) build-verified; the native prove-abort
+path compiles (`cargo check`, both crates). Not re-measured on device (no
+hardware/emulator run this session): the native cancel round trip, the
+encrypted-store round trip on real OPFS hardware, and fresh testnet txs.
 
 ## Known limitations / deferred
 

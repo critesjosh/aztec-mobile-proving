@@ -138,11 +138,26 @@ export function StatusPill({status}: {status: string}) {
   );
 }
 
-export function Busy({label}: {label: string}) {
+export function Busy({
+  label,
+  stage,
+  onCancel,
+}: {
+  label: string;
+  stage?: {label: string; index: number; total: number};
+  onCancel?: () => void;
+}) {
   return (
     <View style={{flexDirection: 'row', alignItems: 'center', gap: 8, marginVertical: spacing.s}}>
       <ActivityIndicator color={colors.accent} />
-      <Text style={{color: colors.dim}}>{label}…</Text>
+      <Text style={{color: colors.dim, flex: 1}}>
+        {stage ? `${stage.label} (${stage.index}/${stage.total})` : `${label}…`}
+      </Text>
+      {onCancel ? (
+        <TouchableOpacity onPress={onCancel} accessibilityLabel="Cancel">
+          <Text style={{color: colors.accent, fontWeight: '600'}}>Cancel</Text>
+        </TouchableOpacity>
+      ) : null}
     </View>
   );
 }

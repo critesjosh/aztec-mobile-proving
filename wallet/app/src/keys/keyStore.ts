@@ -29,6 +29,7 @@ export interface Vault {
 }
 
 const VAULT_KEY = 'wallet/vault.sealed';
+const STORE_KEY_KEY = 'wallet/store-key.sealed';
 
 export async function loadVault(): Promise<Vault | null> {
   const sealed = await AsyncStorage.getItem(VAULT_KEY);
@@ -51,6 +52,34 @@ export async function saveVault(vault: Vault): Promise<void> {
 /** Destroy the vault (explicit user reset only). */
 export async function deleteVault(): Promise<void> {
   await AsyncStorage.removeItem(VAULT_KEY);
+}
+
+/**
+ * Get (or create + persist) the 32-byte key that encrypts the on-device PXE
+ * data store. Generated with the platform secure RNG and stored ONLY as a
+ * Keystore-sealed blob (same seam as the account vault); the raw key (base64)
+ * lives in JS memory for the session and is handed to the WebView at boot so
+ * the persistent PXE store — which holds viewing/nullifier key material derived
+ * from the account secret — is encrypted at rest under a key the Android
+ * Keystore holds, closing the "privacy-sensitive material in a plaintext store"
+ * gap. Returns base64 of 32 bytes.
+ *
+ * NOTE: the sealed store key and the encrypted store must be reset together; a
+ * reset that drops one without the other orphans the store (see resetStoreKey).
+ */
+export async function getOrCreateStoreKey(): Promise<string> {
+  const sealed = await AsyncStorage.getItem(STORE_KEY_KEY);
+  if (sealed) {
+    return await SecureKeys.unseal(sealed);
+  }
+  const keyB64 = await SecureKeys.randomBytes(32);
+  await AsyncStorage.setItem(STORE_KEY_KEY, await SecureKeys.seal(keyB64));
+  return keyB64;
+}
+
+/** Drop the sealed store key (only alongside clearing the encrypted store). */
+export async function resetStoreKey(): Promise<void> {
+  await AsyncStorage.removeItem(STORE_KEY_KEY);
 }
 
 /** Fresh ECDSA-R1 account material from the platform secure RNG. */

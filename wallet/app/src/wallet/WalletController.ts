@@ -11,8 +11,20 @@ import {
   SPONSORED_FPC,
 } from '../config';
 import {MemoryInfo, Prover, PxeServer} from '../native/modules';
-import {generateAccountMaterial, loadVault, saveVault, type Vault} from '../keys/keyStore';
-import {PxeSession, type ProveMetrics, type SessionEvent} from '../pxe/PxeSession';
+import {
+  generateAccountMaterial,
+  getOrCreateStoreKey,
+  loadVault,
+  saveVault,
+  type Vault,
+} from '../keys/keyStore';
+import {
+  isAbortError,
+  PxeSession,
+  type ProgressStage,
+  type ProveMetrics,
+  type SessionEvent,
+} from '../pxe/PxeSession';
 import {TokenStore, type AmmState, type TokenEntry} from '../tokens/tokenStore';
 import {isSucceeded, PendingTxStore, type TrackedTx, type TxKind} from '../txs/pendingTxStore';
 
@@ -36,7 +48,7 @@ export interface WalletSnapshot {
   phase: WalletPhase;
   fatalError?: string;
   origin?: string;
-  nodeInfo?: {l1ChainId: number; rollupVersion: number; nodeVersion: string};
+  nodeInfo?: {l1ChainId: number; rollupVersion: number; nodeVersion: string; storeEncrypted?: boolean};
   storageProbe?: unknown;
   srsStatus?: string;
   account?: {alias: string; address: string; deployed: boolean; deployTxHash?: string};
@@ -49,8 +61,14 @@ export interface WalletSnapshot {
   proveMetrics: ProveMetrics[];
   /** Label of the flow currently running, or null. */
   busy: string | null;
+  /** Structured stage of the running flow (e.g. "Proving on device 3/3"). */
+  busyStage?: ProgressStage;
+  /** True while a flow is running and cancellable (has an in-flight call). */
+  cancellable: boolean;
   /** Last flow error, surfaced in UI until the next flow. */
   flowError?: string;
+  /** Block the PXE has synced private state up to (status display). */
+  syncedBlock?: number;
 }
 
 type Listener = (s: WalletSnapshot) => void;
@@ -69,10 +87,13 @@ export class WalletController {
     logs: [],
     proveMetrics: [],
     busy: null,
+    cancellable: false,
   };
   private listeners = new Set<Listener>();
   private poller: ReturnType<typeof setInterval> | null = null;
   private booted = false;
+  /** Id of the in-flight flow call, for cancellation. */
+  private activeCallId: number | null = null;
 
   constructor() {
     this.session.subscribe(this.onSessionEvent);
@@ -143,14 +164,36 @@ export class WalletController {
       this.update({srsStatus: srs});
       this.log(`SRS: ${srs}`);
 
-      this.log('booting PXE (persistent store)…');
-      const nodeInfo = await this.session.call<WalletSnapshot['nodeInfo']>(
+      // Derive (or restore) the Keystore-sealed store key so the persistent PXE
+      // store can be opened encrypted at rest. Best-effort: if the secure key
+      // is unavailable, boot without it and the WebView falls back to the
+      // persistent-IndexedDB + in-memory-walletDB store.
+      let storeKey: string | undefined;
+      try {
+        storeKey = await getOrCreateStoreKey();
+      } catch (e: any) {
+        this.log(`store key unavailable (${firstLine(e?.message ?? String(e))}); booting without store encryption`);
+      }
+
+      this.log('booting PXE (encrypted store if available)…');
+      const nodeInfo = await this.session.call<
+        WalletSnapshot['nodeInfo'] & {storeEncrypted?: boolean}
+      >(
         'boot',
-        {nodeUrl: NODE_URL, sponsoredFpc: SPONSORED_FPC, persistent: true},
+        {
+          nodeUrl: NODE_URL,
+          sponsoredFpc: SPONSORED_FPC,
+          persistent: true,
+          encrypted: !!storeKey,
+          storeKey,
+        },
         BOOT_TIMEOUT_MS,
       );
       this.update({nodeInfo});
-      this.log(`PXE ready: chain ${nodeInfo?.l1ChainId} rollup ${nodeInfo?.rollupVersion}`);
+      this.log(
+        `PXE ready: chain ${nodeInfo?.l1ChainId} rollup ${nodeInfo?.rollupVersion} ` +
+          `(store ${nodeInfo?.storeEncrypted ? 'ENCRYPTED' : 'persistent-plain'})`,
+      );
 
       this.vault = await loadVault();
       if (this.vault && this.vault.accounts.length > 0) {
@@ -219,7 +262,12 @@ export class WalletController {
         this.log(e.message);
         break;
       case 'progress':
-        this.log(`… ${e.phase}${e.data ? ' ' + JSON.stringify(e.data) : ''}`);
+        if (e.stage) {
+          this.update({busyStage: e.stage});
+          this.log(`… ${e.stage.label} (${e.stage.index}/${e.stage.total})`);
+        } else {
+          this.log(`… ${e.phase}${e.data ? ' ' + JSON.stringify(e.data) : ''}`);
+        }
         break;
       case 'prove-metrics': {
         const m = e.metrics;
@@ -243,6 +291,32 @@ export class WalletController {
     } catch {}
   }
 
+  /**
+   * Drive one controlled PXE sync and refresh the synced-block status. The
+   * wallet's PXE runs with autoSync off (see pxe-web boot), so we own the sync
+   * cadence: one sync per poll cycle / balance refresh instead of an implicit
+   * sync per read. Skipped while a flow is running (its send/simulate already
+   * drives exactly one sync). Best-effort; never throws into callers.
+   */
+  private async syncPxe(): Promise<void> {
+    if (this.snapshot.busy || !this.session.ready) {
+      return;
+    }
+    try {
+      await this.session.call('sync', {}, 60_000);
+      const {blockNumber} = await this.session.call<{blockNumber?: number}>(
+        'getSyncedBlock',
+        {},
+        30_000,
+      );
+      if (blockNumber !== undefined && blockNumber !== this.snapshot.syncedBlock) {
+        this.update({syncedBlock: blockNumber});
+      }
+    } catch {
+      // Network hiccup / not reachable for standalone sync: reads self-sync.
+    }
+  }
+
   // -------------------------------------------------------------------------
   // Flows (all: set busy, surface errors, track submitted txs)
   // -------------------------------------------------------------------------
@@ -252,17 +326,48 @@ export class WalletController {
       this.log(`flow "${label}" ignored: "${this.snapshot.busy}" still running`);
       return undefined;
     }
-    this.update({busy: label, flowError: undefined});
+    this.update({busy: label, busyStage: undefined, cancellable: true, flowError: undefined});
     try {
       return await fn();
     } catch (e: any) {
+      if (isAbortError(e)) {
+        this.log(`${label} cancelled`);
+        return undefined;
+      }
       const message = `${label} failed: ${firstLine(e?.message ?? String(e))}`;
       this.log(message);
       this.update({flowError: message});
       return undefined;
     } finally {
-      this.update({busy: null});
+      this.activeCallId = null;
+      this.update({busy: null, busyStage: undefined, cancellable: false});
       void this.sampleMemory();
+    }
+  }
+
+  /**
+   * Session call that records its id so the running flow can be cancelled. Flow
+   * methods use this instead of `session.call` directly; background calls
+   * (poller, balance refresh) use `session.call` so they are not cancelled by
+   * the user's Cancel action.
+   */
+  private flowCall<T>(method: string, params: object = {}, timeoutMs?: number): Promise<T> {
+    return this.session.call<T>(
+      method,
+      params,
+      timeoutMs,
+      id => {
+        this.activeCallId = id;
+      },
+      true, // cancellable: arms WebView abort wiring for this flow call
+    );
+  }
+
+  /** Cancel the running flow (cooperative; lands at the next phase boundary). */
+  cancelCurrent(): void {
+    if (this.activeCallId != null && this.snapshot.cancellable) {
+      this.log(`cancelling "${this.snapshot.busy ?? 'flow'}"…`);
+      this.session.abort(this.activeCallId);
     }
   }
 
@@ -281,7 +386,7 @@ export class WalletController {
       this.vault = {version: 1, accounts: [material]};
       await saveVault(this.vault);
 
-      const {address} = await this.session.call<{address: string}>(
+      const {address} = await this.flowCall<{address: string}>(
         'createAccount',
         {secret: material.secret, salt: material.salt, signingKey: material.signingKey, alias},
         120_000,
@@ -292,7 +397,7 @@ export class WalletController {
       this.log(`account ${address}`);
 
       this.log('deploying account (sponsored fee, proving on-device)…');
-      const {txHash} = await this.session.call<{txHash: string}>(
+      const {txHash} = await this.flowCall<{txHash: string}>(
         'deployAccount',
         {address},
         FLOW_TIMEOUT_MS,
@@ -308,7 +413,7 @@ export class WalletController {
   async deployToken(name: string, symbol: string): Promise<void> {
     const from = this.requireAccount();
     await this.runFlow(`deploy token ${symbol}`, async () => {
-      const res = await this.session.call<{txHash: string; address: string}>(
+      const res = await this.flowCall<{txHash: string; address: string}>(
         'deployToken',
         {from, name, symbol, decimals: 18},
         FLOW_TIMEOUT_MS,
@@ -327,7 +432,7 @@ export class WalletController {
   async mint(token: string, amount: string): Promise<void> {
     const from = this.requireAccount();
     await this.runFlow('mint', async () => {
-      const res = await this.session.call<{txHash: string}>(
+      const res = await this.flowCall<{txHash: string}>(
         'mintPrivate',
         {token, from, to: from, amount},
         FLOW_TIMEOUT_MS,
@@ -339,7 +444,7 @@ export class WalletController {
   async transfer(token: string, to: string, amount: string): Promise<void> {
     const from = this.requireAccount();
     await this.runFlow('transfer', async () => {
-      const res = await this.session.call<{txHash: string}>(
+      const res = await this.flowCall<{txHash: string}>(
         'transfer',
         {token, from, to, amount},
         FLOW_TIMEOUT_MS,
@@ -350,14 +455,14 @@ export class WalletController {
 
   async registerSender(address: string): Promise<void> {
     await this.runFlow('register sender', async () => {
-      await this.session.call('registerSender', {address}, 60_000);
+      await this.flowCall('registerSender', {address}, 60_000);
       this.log(`sender registered: ${address}`);
     });
   }
 
   async registerToken(address: string): Promise<void> {
     await this.runFlow('register token', async () => {
-      await this.session.call('registerToken', {address}, 60_000);
+      await this.flowCall('registerToken', {address}, 60_000);
       await this.tokenStore.addToken({address, name: 'External', symbol: 'EXT', decimals: 18});
     });
   }
@@ -367,6 +472,10 @@ export class WalletController {
     if (!account?.deployed) {
       return;
     }
+    // Drive ONE controlled PXE sync before reading, so every balance below runs
+    // against the same fresh anchor (the wallet keeps autoSync off — see
+    // pxe-web boot). Best-effort: reads still self-sync if this no-ops.
+    await this.syncPxe();
     const balances: Record<string, string> = {};
     for (const t of this.tokenStore.tokens()) {
       try {
@@ -394,7 +503,7 @@ export class WalletController {
       const from = this.requireAccount();
       const amm = this.tokenStore.amm();
       if (!amm) {
-        const res = await this.session.call<{
+        const res = await this.flowCall<{
           liquidityToken: string;
           amm: string;
           txHashes: {liquidityToken: string; amm: string};
@@ -424,7 +533,7 @@ export class WalletController {
         if (!this.txSucceeded(ammTx) || !this.txSucceeded(lpTx)) {
           throw new Error('AMM deployment still confirming — retry once mined');
         }
-        const res = await this.session.call<{txHash: string}>(
+        const res = await this.flowCall<{txHash: string}>(
           'setLiquidityMinter',
           {liquidityToken: amm.liquidityToken, amm: amm.amm, from},
           FLOW_TIMEOUT_MS,
@@ -437,7 +546,7 @@ export class WalletController {
         const tx = this.findTx(amm.txSetMinter);
         if (this.txFailed(tx) || !amm.txSetMinter) {
           // Resubmit set_minter; the deploys are already confirmed.
-          const res = await this.session.call<{txHash: string}>(
+          const res = await this.flowCall<{txHash: string}>(
             'setLiquidityMinter',
             {liquidityToken: amm.liquidityToken, amm: amm.amm, from},
             FLOW_TIMEOUT_MS,
@@ -473,7 +582,7 @@ export class WalletController {
       if (!amm?.amm || amm.step !== 'ready') {
         throw new Error('AMM not set up');
       }
-      const res = await this.session.call<{txHash: string}>(
+      const res = await this.flowCall<{txHash: string}>(
         'addLiquidity',
         {
           amm: amm.amm,
@@ -524,6 +633,8 @@ export class WalletController {
     if (this.snapshot.phase !== 'ready' && this.snapshot.phase !== 'onboarding') {
       return;
     }
+    // One controlled sync per poll cycle keeps receipt reads on a fresh anchor.
+    await this.syncPxe();
     for (const tx of unsettled) {
       try {
         const receipt = await this.session.call<{
