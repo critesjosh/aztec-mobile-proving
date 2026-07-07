@@ -69,7 +69,7 @@ Key decisions (rationale in PLAN.md):
 | LP set_minter(AMM) | `0x25080ffcae7ab47a2fe6af9fddb25e3c1ab5810ba5ddf61ab2ce427bc3e55bf7` | 2801 | 1828 ms |
 | **AMM add_liquidity (14 circuits, 2 authwits)** | `0x1c840bfa352ee6a366475bb113ba6b29f67ad6d75ef0bf4040b516e952c6d771` | 2803 | 2189 ms |
 
-Explorer: `https://testnet.aztecscan.xyz/tx/<hash>`. All statuses
+Explorer: `https://testnet.aztecscan.xyz/tx-effects/<hash>`. All statuses
 proposed-or-better with `executionResult: success`. (The first four hashes
 are truncated as displayed in-app; full hashes are logged for every
 subsequent submit — see the commit history for the session log.)
