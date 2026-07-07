@@ -223,7 +223,7 @@ same on the phone) and fees paid by the SponsoredFPC:
 
 The transfer run also deployed a Token (`0x0639d5…`) and did a private
 `mint_to_private` (`0x245d58…`), both native-proven. Explorer:
-`https://testnet.aztecscan.xyz/tx/<hash>`.
+`https://testnet.aztecscan.xyz/tx-effects/<hash>`.
 
 The load-bearing correctness path is confirmed by these landing: native prover →
 flat proof fields (layout == bb.js `flattenChonkProofFields`) →

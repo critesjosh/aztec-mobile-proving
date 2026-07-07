@@ -6,7 +6,7 @@
 export const NODE_URL = 'https://v5.testnet.rpc.aztec-labs.com';
 export const SPONSORED_FPC =
   '0x1969946536f0c09269e2c75e414eef4e21a76e763c5514125208db33d7d944d7';
-export const EXPLORER_TX_BASE = 'https://testnet.aztecscan.xyz/tx/';
+export const EXPLORER_TX_BASE = 'https://testnet.aztecscan.xyz/tx-effects/';
 
 /** Fixed loopback port — must match PxeServerModule.PORT (origin keys IndexedDB). */
 export const PXE_ORIGIN = 'http://127.0.0.1:38271';

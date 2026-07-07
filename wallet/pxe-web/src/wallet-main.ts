@@ -248,14 +248,31 @@ const handlers: Record<string, (params: any, emit: Emit) => Promise<unknown>> = 
           const { createLogger } = await import('@aztec/foundation/log');
           // getEncryptionKey must return a FRESH buffer per call: the key is
           // transferred to the store's worker and detaches. Re-decode each time.
-          const { pxeStore, walletStore } = await openEncryptedEmbeddedStores(
-            {
-              pxe: { name: 'wallet_pxe', poolDirectory: 'wallet-pxe' },
-              wallet: { name: 'wallet_db', poolDirectory: 'wallet-db' },
-            },
-            async () => b64ToBytes(params.storeKey!),
-            createLogger('wallet:store:encrypted'),
-          );
+          //
+          // Some WebViews expose OPFS directories (probe.dirOpens === true) but
+          // provide sync access handles only inside a Worker — or not at all —
+          // and sqlite-opfs can then hang indefinitely instead of throwing. The
+          // main-thread probe can't reliably tell these apart, so bound the open
+          // and let the catch below fall back to the persistent IndexedDB store
+          // if it stalls. Real encrypted opens resolve in well under this budget.
+          const OPEN_TIMEOUT_MS = 30_000;
+          let openTimer: ReturnType<typeof setTimeout> | undefined;
+          const {pxeStore, walletStore} = await Promise.race([
+            openEncryptedEmbeddedStores(
+              {
+                pxe: { name: 'wallet_pxe', poolDirectory: 'wallet-pxe' },
+                wallet: { name: 'wallet_db', poolDirectory: 'wallet-db' },
+              },
+              async () => b64ToBytes(params.storeKey!),
+              createLogger('wallet:store:encrypted'),
+            ),
+            new Promise<never>((_, reject) => {
+              openTimer = setTimeout(
+                () => reject(new Error(`encrypted store open timed out after ${OPEN_TIMEOUT_MS} ms`)),
+                OPEN_TIMEOUT_MS,
+              );
+            }),
+          ]).finally(() => clearTimeout(openTimer));
           walletOpts = {
             ephemeral: false,
             pxe: { ...pxeBase, store: pxeStore },
